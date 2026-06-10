@@ -97,7 +97,7 @@ def append_row(token: str, row_data: list):
             f"{excel_path}:/workbook/worksheets/{sheet_name}")
 
     # Try table first
-    r = httpx.post(f"{base}/tables/Tabela1/rows", headers=gh(token),
+    r = httpx.post(f"{base}/tables/Tabela2/rows", headers=gh(token),
                    json={"values": [row_data]}, timeout=30)
     if r.status_code in (200, 201):
         return
