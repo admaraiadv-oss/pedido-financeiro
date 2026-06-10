@@ -12,11 +12,11 @@ from PIL import Image
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.mount("/static", StaticFiles(directory="frontend"), name="static")
+app.mount("/static", StaticFiles(directory="../frontend"), name="static")
 
 @app.get("/")
 def root():
-    return FileResponse("frontend/index.html")
+    return FileResponse("../frontend/index.html")
 
 # ── PDF utils ────────────────────────────────────────────────────────────────
 
