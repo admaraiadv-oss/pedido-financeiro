@@ -3,14 +3,16 @@ import io
 import json
 import logging
 from datetime import datetime
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse
 from typing import List, Optional
 import fitz
 from PIL import Image
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+from google.auth.transport.requests import Request as GoogleRequest
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
@@ -21,25 +23,73 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/static", StaticFiles(directory="../frontend"), name="static")
 
-@app.get("/")
-def root():
-    return FileResponse("../frontend/index.html")
-
-@app.get("/comprovante")
-def comprovante_page():
-    return FileResponse("../frontend/comprovante.html")
-
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
+def get_oauth_config():
+    return {
+        "web": {
+            "client_id": os.environ["GOOGLE_CLIENT_ID"],
+            "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [os.environ["OAUTH_REDIRECT_URI"]],
+        }
+    }
+
+def get_credentials() -> Credentials:
+    token_data = os.environ.get("GOOGLE_TOKEN_JSON")
+    if not token_data:
+        raise HTTPException(401, "Sistema não autorizado. Acesse /auth para autorizar.")
+    creds = Credentials.from_authorized_user_info(json.loads(token_data), SCOPES)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(GoogleRequest())
+        # Save refreshed token
+        os.environ["GOOGLE_TOKEN_JSON"] = creds.to_json()
+    return creds
+
 def get_services():
-    creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
-    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    creds = get_credentials()
     drive = build("drive", "v3", credentials=creds)
     sheets = build("sheets", "v4", credentials=creds)
     return drive, sheets
+
+# ── Auth endpoints ────────────────────────────────────────────────────────────
+
+@app.get("/auth")
+def auth():
+    flow = Flow.from_client_config(get_oauth_config(), scopes=SCOPES)
+    flow.redirect_uri = os.environ["OAUTH_REDIRECT_URI"]
+    auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+    return RedirectResponse(auth_url)
+
+@app.get("/oauth/callback")
+async def oauth_callback(request: Request):
+    code = request.query_params.get("code")
+    if not code:
+        raise HTTPException(400, "Código de autorização não encontrado.")
+    flow = Flow.from_client_config(get_oauth_config(), scopes=SCOPES)
+    flow.redirect_uri = os.environ["OAUTH_REDIRECT_URI"]
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+    token_json = creds.to_json()
+    # Store token in env (works for current process)
+    os.environ["GOOGLE_TOKEN_JSON"] = token_json
+    logger.info("OAuth token obtained successfully")
+    logger.info(f"TOKEN_JSON para salvar no Render: {token_json}")
+    return HTMLResponse(f"""
+    <html><body style="font-family:sans-serif;padding:40px;background:#f5f5f5">
+    <h2>✅ Autorização concluída!</h2>
+    <p>Copie o token abaixo e salve como variável <strong>GOOGLE_TOKEN_JSON</strong> no Render:</p>
+    <textarea rows="10" style="width:100%;font-size:12px">{token_json}</textarea>
+    <br><br>
+    <a href="/">Voltar ao formulário</a>
+    </body></html>
+    """)
+
+# ── PDF utils ────────────────────────────────────────────────────────────────
 
 def image_bytes_to_pdf_bytes(image_bytes: bytes) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
@@ -63,6 +113,8 @@ def merge_pdfs(pdf_list: list) -> bytes:
     merged.save(buf)
     merged.close()
     return buf.getvalue()
+
+# ── Drive helpers ────────────────────────────────────────────────────────────
 
 def upload_to_drive(drive, content: bytes, filename: str, folder_id: str):
     media = MediaIoBaseUpload(io.BytesIO(content), mimetype="application/pdf", resumable=False)
@@ -90,6 +142,8 @@ def list_pending(drive) -> list:
         orderBy="name"
     ).execute()
     return results.get("files", [])
+
+# ── Sheets helpers ───────────────────────────────────────────────────────────
 
 def get_next_anexo_number(sheets) -> int:
     spreadsheet_id = os.environ["SHEETS_ID"]
@@ -147,6 +201,16 @@ def update_anexo_in_sheets(sheets, file_drive_id: str, numero: int):
             return True
     return False
 
+# ── Main endpoints ────────────────────────────────────────────────────────────
+
+@app.get("/")
+def root():
+    return FileResponse("../frontend/index.html")
+
+@app.get("/comprovante")
+def comprovante_page():
+    return FileResponse("../frontend/comprovante.html")
+
 @app.post("/submit")
 async def submit(
     tipo: str = Form(...),
@@ -160,6 +224,8 @@ async def submit(
 ):
     try:
         drive, sheets = get_services()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"Erro de autenticação Google: {e}")
 
@@ -191,16 +257,10 @@ async def submit(
             raise HTTPException(500, f"Erro ao salvar no Drive: {e}")
 
     row = [
-        data_hoje,
-        cliente,
-        descricao_formula,
+        data_hoje, cliente, descricao_formula,
         valor.replace(",", "."),
         "pendente" if has_file else "x",
-        advogado,
-        descricao_completa,
-        "Não",
-        obs or "",
-        file_drive_id,
+        advogado, descricao_completa, "Não", obs or "", file_drive_id,
     ]
 
     try:
@@ -229,6 +289,8 @@ async def anexar_comprovante(
 ):
     try:
         drive, sheets = get_services()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"Erro de autenticação Google: {e}")
 
