@@ -2,6 +2,7 @@ import os
 import io
 import json
 import logging
+import httpx
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,15 +40,52 @@ def get_oauth_config():
         }
     }
 
+def save_token_to_render(token_json: str):
+    """Persist refreshed token back to Render environment variable."""
+    try:
+        render_api_key = os.environ.get("RENDER_API_KEY")
+        service_id = os.environ.get("RENDER_SERVICE_ID")
+        if not render_api_key or not service_id:
+            logger.warning("RENDER_API_KEY ou RENDER_SERVICE_ID não configurados — token não persistido.")
+            return
+        url = f"https://api.render.com/v1/services/{service_id}/env-vars"
+        headers = {"Authorization": f"Bearer {render_api_key}", "Content-Type": "application/json"}
+        # Get current env vars
+        r = httpx.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            logger.error(f"Erro ao buscar env vars do Render: {r.text}")
+            return
+        env_vars = r.json()
+        # Update GOOGLE_TOKEN_JSON
+        updated = []
+        found = False
+        for ev in env_vars:
+            if ev.get("envVar", {}).get("key") == "GOOGLE_TOKEN_JSON":
+                updated.append({"key": "GOOGLE_TOKEN_JSON", "value": token_json})
+                found = True
+            else:
+                updated.append({"key": ev["envVar"]["key"], "value": ev["envVar"]["value"]})
+        if not found:
+            updated.append({"key": "GOOGLE_TOKEN_JSON", "value": token_json})
+        r2 = httpx.put(url, headers=headers, json=updated, timeout=15)
+        if r2.status_code == 200:
+            logger.info("Token salvo no Render com sucesso.")
+        else:
+            logger.error(f"Erro ao salvar token no Render: {r2.text}")
+    except Exception as e:
+        logger.error(f"Erro ao persistir token: {e}")
+
 def get_credentials() -> Credentials:
     token_data = os.environ.get("GOOGLE_TOKEN_JSON")
     if not token_data:
         raise HTTPException(401, "Sistema não autorizado. Acesse /auth para autorizar.")
     creds = Credentials.from_authorized_user_info(json.loads(token_data), SCOPES)
     if creds.expired and creds.refresh_token:
+        logger.info("Token expirado, renovando...")
         creds.refresh(GoogleRequest())
-        # Save refreshed token
-        os.environ["GOOGLE_TOKEN_JSON"] = creds.to_json()
+        new_token = creds.to_json()
+        os.environ["GOOGLE_TOKEN_JSON"] = new_token
+        save_token_to_render(new_token)
     return creds
 
 def get_services():
@@ -75,17 +113,13 @@ async def oauth_callback(request: Request):
     flow.fetch_token(code=code)
     creds = flow.credentials
     token_json = creds.to_json()
-    # Store token in env (works for current process)
     os.environ["GOOGLE_TOKEN_JSON"] = token_json
-    logger.info("OAuth token obtained successfully")
-    logger.info(f"TOKEN_JSON para salvar no Render: {token_json}")
-    return HTMLResponse(f"""
-    <html><body style="font-family:sans-serif;padding:40px;background:#f5f5f5">
+    save_token_to_render(token_json)
+    return HTMLResponse("""
+    <html><body style="font-family:sans-serif;padding:40px;background:#f5f5f5;text-align:center">
     <h2>✅ Autorização concluída!</h2>
-    <p>Copie o token abaixo e salve como variável <strong>GOOGLE_TOKEN_JSON</strong> no Render:</p>
-    <textarea rows="10" style="width:100%;font-size:12px">{token_json}</textarea>
-    <br><br>
-    <a href="/">Voltar ao formulário</a>
+    <p>O sistema está autorizado e pronto para uso.</p>
+    <br><a href="/" style="background:#1B2D4F;color:white;padding:12px 24px;border-radius:4px;text-decoration:none">Ir ao formulário</a>
     </body></html>
     """)
 
@@ -270,7 +304,6 @@ async def submit(
 
     return {"ok": True, "message": "Pedido registrado com sucesso!"}
 
-
 @app.get("/pendentes")
 async def get_pendentes():
     try:
@@ -279,7 +312,6 @@ async def get_pendentes():
         return {"files": files}
     except Exception as e:
         raise HTTPException(500, f"Erro ao listar pendentes: {e}")
-
 
 @app.post("/anexar-comprovante")
 async def anexar_comprovante(
@@ -312,7 +344,6 @@ async def anexar_comprovante(
         raise HTTPException(500, f"Erro: {e}")
 
     return {"ok": True, "numero": next_num, "filename": final_name}
-
 
 @app.get("/health")
 def health():
