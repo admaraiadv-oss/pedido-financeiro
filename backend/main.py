@@ -1,16 +1,18 @@
 import os
 import io
-import httpx
+import json
+import logging
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import List, Optional
-from urllib.parse import quote
 import fitz
 from PIL import Image
-import logging
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,7 +25,21 @@ app.mount("/static", StaticFiles(directory="../frontend"), name="static")
 def root():
     return FileResponse("../frontend/index.html")
 
-# ── PDF utils ────────────────────────────────────────────────────────────────
+@app.get("/comprovante")
+def comprovante_page():
+    return FileResponse("../frontend/comprovante.html")
+
+SCOPES = [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/spreadsheets",
+]
+
+def get_services():
+    creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    drive = build("drive", "v3", credentials=creds)
+    sheets = build("sheets", "v4", credentials=creds)
+    return drive, sheets
 
 def image_bytes_to_pdf_bytes(image_bytes: bytes) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
@@ -48,82 +64,88 @@ def merge_pdfs(pdf_list: list) -> bytes:
     merged.close()
     return buf.getvalue()
 
-# ── Microsoft Graph ──────────────────────────────────────────────────────────
+def upload_to_drive(drive, content: bytes, filename: str, folder_id: str):
+    media = MediaIoBaseUpload(io.BytesIO(content), mimetype="application/pdf", resumable=False)
+    file_meta = {"name": filename, "parents": [folder_id]}
+    f = drive.files().create(body=file_meta, media_body=media, fields="id,webViewLink").execute()
+    return f.get("id", ""), f.get("webViewLink", "")
 
-def get_access_token() -> str:
-    url = f"https://login.microsoftonline.com/{os.environ['TENANT_ID']}/oauth2/v2.0/token"
-    r = httpx.post(url, data={
-        "grant_type": "client_credentials",
-        "client_id": os.environ["CLIENT_ID"],
-        "client_secret": os.environ["CLIENT_SECRET"],
-        "scope": "https://graph.microsoft.com/.default",
-    })
-    r.raise_for_status()
-    return r.json()["access_token"]
+def download_from_drive(drive, file_id: str) -> bytes:
+    request = drive.files().get_media(fileId=file_id)
+    buf = io.BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return buf.getvalue()
 
-def gh(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+def delete_from_drive(drive, file_id: str):
+    drive.files().delete(fileId=file_id).execute()
 
-def encode_path(path: str) -> str:
-    return quote(path, safe="/")
+def list_pending(drive) -> list:
+    folder_id = os.environ["DRIVE_FOLDER_PENDENTES"]
+    results = drive.files().list(
+        q=f"'{folder_id}' in parents and trashed=false",
+        fields="files(id, name)",
+        orderBy="name"
+    ).execute()
+    return results.get("files", [])
 
-def get_next_anexo_number(token: str) -> int:
-    user_id = os.environ["ONEDRIVE_USER_ID"]
-    excel_path = encode_path(os.environ["EXCEL_PATH"])
-    sheet_name = os.environ.get("SHEET_NAME", "Planilha1")
-    url = f"https://graph.microsoft.com/v1.0/users/{user_id}/drive/root:/{excel_path}:/workbook/worksheets/{sheet_name}/usedRange"
-    logger.info(f"Fetching usedRange: {url}")
-    r = httpx.get(url, headers=gh(token), timeout=30)
-    logger.info(f"usedRange status: {r.status_code} - {r.text[:300]}")
-    r.raise_for_status()
+def get_next_anexo_number(sheets) -> int:
+    spreadsheet_id = os.environ["SHEETS_ID"]
+    sheet_name = os.environ.get("SHEET_NAME", "1")
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!E:E"
+    ).execute()
+    values = result.get("values", [])
     max_num = 0
-    for row in r.json().get("values", [])[1:]:
-        if len(row) > 4:
+    for row in values[1:]:
+        if row:
             try:
-                n = int(str(row[4]).strip())
+                n = int(str(row[0]).strip())
                 if n > max_num:
                     max_num = n
             except (ValueError, TypeError):
                 pass
     return max_num + 1
 
-def upload_to_onedrive(token: str, content: bytes, filename: str, folder: str) -> str:
-    user_id = os.environ["ONEDRIVE_USER_ID"]
-    path = encode_path(f"{folder.strip('/')}/{filename}")
-    url = f"https://graph.microsoft.com/v1.0/users/{user_id}/drive/root:/{path}:/content"
-    logger.info(f"Uploading to: {url}")
-    r = httpx.put(url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/octet-stream"},
-                  content=content, timeout=60)
-    logger.info(f"Upload status: {r.status_code}")
-    r.raise_for_status()
-    return r.json().get("webUrl", "")
+def append_row_sheets(sheets, row_data: list):
+    spreadsheet_id = os.environ["SHEETS_ID"]
+    sheet_name = os.environ.get("SHEET_NAME", "1")
+    sheets.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!A1",
+        valueInputOption="USER_ENTERED",
+        insertDataOption="INSERT_ROWS",
+        body={"values": [row_data]}
+    ).execute()
 
-def append_row(token: str, row_data: list):
-    user_id = os.environ["ONEDRIVE_USER_ID"]
-    excel_path = encode_path(os.environ["EXCEL_PATH"])
-    sheet_name = os.environ.get("SHEET_NAME", "Planilha1")
-    table_name = os.environ.get("TABLE_NAME", "Tabela2")
-    base = f"https://graph.microsoft.com/v1.0/users/{user_id}/drive/root:/{excel_path}:/workbook/worksheets/{sheet_name}"
-
-    url = f"{base}/tables/{table_name}/rows"
-    logger.info(f"Appending row to: {url}")
-    r = httpx.post(url, headers=gh(token), json={"values": [row_data]}, timeout=30)
-    logger.info(f"Append status: {r.status_code} - {r.text[:300]}")
-
-    if r.status_code in (200, 201):
-        return
-
-    # Fallback
-    rng = httpx.get(f"{base}/usedRange", headers=gh(token), timeout=30)
-    rng.raise_for_status()
-    next_row = rng.json().get("rowCount", 1) + 1
-    col = chr(64 + len(row_data))
-    r2 = httpx.patch(f"{base}/range(address='A{next_row}:{col}{next_row}')",
-                     headers=gh(token), json={"values": [row_data]}, timeout=30)
-    logger.info(f"Fallback status: {r2.status_code} - {r2.text[:300]}")
-    r2.raise_for_status()
-
-# ── Endpoint ─────────────────────────────────────────────────────────────────
+def update_anexo_in_sheets(sheets, file_drive_id: str, numero: int):
+    spreadsheet_id = os.environ["SHEETS_ID"]
+    sheet_name = os.environ.get("SHEET_NAME", "1")
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!A:J"
+    ).execute()
+    values = result.get("values", [])
+    for i, row in enumerate(values):
+        if len(row) > 9 and row[9] == file_drive_id:
+            row_num = i + 1
+            sheets.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"{sheet_name}!E{row_num}",
+                valueInputOption="USER_ENTERED",
+                body={"values": [[str(numero)]]}
+            ).execute()
+            sheets.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"{sheet_name}!J{row_num}",
+                valueInputOption="USER_ENTERED",
+                body={"values": [[""]]}
+            ).execute()
+            return True
+    return False
 
 @app.post("/submit")
 async def submit(
@@ -137,10 +159,9 @@ async def submit(
     arquivos: List[UploadFile] = File(default=[]),
 ):
     try:
-        token = get_access_token()
+        drive, sheets = get_services()
     except Exception as e:
-        logger.error(f"Auth error: {e}")
-        raise HTTPException(500, f"Erro de autenticação Microsoft: {e}")
+        raise HTTPException(500, f"Erro de autenticação Google: {e}")
 
     descricao_completa = descricao
     if processo and processo.strip():
@@ -148,58 +169,88 @@ async def submit(
 
     descricao_formula = f"{descricao_completa} - {cliente} - {advogado}"
     data_hoje = datetime.now().strftime("%d/%m/%Y")
-    data_file = datetime.now().strftime("%d-%m-%Y")
 
     def safe(s: str, limit=40) -> str:
         return s.replace("/", "-").replace("\\", "-")[:limit]
 
-    folder = os.environ.get("ONEDRIVE_FOLDER", "Documentos/Comprovantes")
+    folder_pendentes = os.environ["DRIVE_FOLDER_PENDENTES"]
     valid_files = [f for f in arquivos if f and f.filename]
     has_file = bool(valid_files)
-    anexo_valor = "x"
-    next_num = None
+    file_drive_id = ""
 
     if has_file:
-        try:
-            next_num = get_next_anexo_number(token)
-            anexo_valor = str(next_num)
-        except Exception as e:
-            logger.error(f"Anexo number error: {e}")
-            raise HTTPException(500, f"Erro ao buscar número de anexo: {e}")
-
         pdfs = []
         for f in valid_files:
             content = await f.read()
             pdfs.append(to_pdf_bytes(content, f.filename))
-
         merged = merge_pdfs(pdfs) if len(pdfs) > 1 else pdfs[0]
-        filename = f"{next_num} {safe(descricao_completa)} - {safe(cliente)} - {safe(advogado)}.pdf"
-
+        filename = f"PENDENTE {safe(descricao_completa)} - {safe(cliente)} - {safe(advogado)}.pdf"
         try:
-            upload_to_onedrive(token, merged, filename, folder)
+            file_drive_id, _ = upload_to_drive(drive, merged, filename, folder_pendentes)
         except Exception as e:
-            logger.error(f"Upload error: {e}")
-            raise HTTPException(500, f"Erro ao salvar no OneDrive: {e}")
+            raise HTTPException(500, f"Erro ao salvar no Drive: {e}")
 
     row = [
         data_hoje,
         cliente,
         descricao_formula,
         valor.replace(",", "."),
-        anexo_valor,
+        "pendente" if has_file else "x",
         advogado,
         descricao_completa,
         "Não",
         obs or "",
+        file_drive_id,
     ]
 
     try:
-        append_row(token, row)
+        append_row_sheets(sheets, row)
     except Exception as e:
-        logger.error(f"Excel error: {e}")
-        raise HTTPException(500, f"Erro ao gravar no Excel: {e}")
+        raise HTTPException(500, f"Erro ao gravar no Sheets: {e}")
 
     return {"ok": True, "message": "Pedido registrado com sucesso!"}
+
+
+@app.get("/pendentes")
+async def get_pendentes():
+    try:
+        drive, _ = get_services()
+        files = list_pending(drive)
+        return {"files": files}
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao listar pendentes: {e}")
+
+
+@app.post("/anexar-comprovante")
+async def anexar_comprovante(
+    file_id: str = Form(...),
+    file_name: str = Form(...),
+    comprovante: UploadFile = File(...),
+):
+    try:
+        drive, sheets = get_services()
+    except Exception as e:
+        raise HTTPException(500, f"Erro de autenticação Google: {e}")
+
+    folder_comprovantes = os.environ["DRIVE_FOLDER_COMPROVANTES"]
+
+    try:
+        next_num = get_next_anexo_number(sheets)
+        original_pdf = download_from_drive(drive, file_id)
+        comp_content = await comprovante.read()
+        comp_pdf = to_pdf_bytes(comp_content, comprovante.filename)
+        merged = merge_pdfs([original_pdf, comp_pdf])
+        base_name = file_name.replace("PENDENTE ", "")
+        final_name = f"{next_num} {base_name}"
+        upload_to_drive(drive, merged, final_name, folder_comprovantes)
+        delete_from_drive(drive, file_id)
+        update_anexo_in_sheets(sheets, file_id, next_num)
+    except Exception as e:
+        logger.error(f"Erro ao anexar comprovante: {e}")
+        raise HTTPException(500, f"Erro: {e}")
+
+    return {"ok": True, "numero": next_num, "filename": final_name}
+
 
 @app.get("/health")
 def health():
