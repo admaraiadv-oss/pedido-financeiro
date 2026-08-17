@@ -48,6 +48,7 @@
   .btn-add{display:flex;align-items:center;gap:8px;padding:9px 13px;border:1px dashed var(--border);border-radius:2px;background:transparent;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:400;color:var(--ink2);width:100%;transition:all 0.15s;margin-top:6px;letter-spacing:0.02em;}
   .btn-add:hover{border-color:var(--navy);color:var(--navy);background:var(--navy-pale);}
   .btn-add-icon{font-size:16px;color:var(--navy);opacity:0.6;}
+  .paste-hint{font-size:11px;color:var(--ink2);opacity:0.6;margin-top:6px;text-align:center;}
   .btn-submit{width:100%;padding:14px;background:var(--navy);color:white;border:none;border-radius:2px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;cursor:pointer;margin-top:12px;transition:all 0.18s;letter-spacing:0.1em;text-transform:uppercase;}
   .btn-submit:hover{background:var(--navy-light);}
   .btn-submit:disabled{background:#b0b8c8;cursor:not-allowed;}
@@ -137,6 +138,7 @@
         <button type="button" class="btn-add" onclick="addFile('guias')">
           <span class="btn-add-icon">+</span> Adicionar guia
         </button>
+        <p class="paste-hint">Você também pode colar imagens com Ctrl+V</p>
       </div>
     </div>
     <div id="uploads-reembolso" class="hidden">
@@ -146,6 +148,7 @@
         <button type="button" class="btn-add" onclick="addFile('despesas')">
           <span class="btn-add-icon">+</span> Adicionar comprovante de despesa
         </button>
+        <p class="paste-hint">Você também pode colar imagens com Ctrl+V</p>
       </div>
     </div>
     <div class="field">
@@ -159,22 +162,28 @@
 <div class="toast" id="toast"></div>
 <script>
   const fileLists={guias:[],despesas:[]};
+
   function addFile(listName){
     const input=document.createElement('input');
     input.type='file';input.accept='.pdf,.jpg,.jpeg,.png';
     input.onchange=()=>{
       if(!input.files[0])return;
-      const file=input.files[0];
-      const id=Date.now()+Math.random();
-      fileLists[listName].push({id,file});
-      renderFileList(listName);
+      addFileToList(listName, input.files[0]);
     };
     input.click();
   }
+
+  function addFileToList(listName, file){
+    const id=Date.now()+Math.random();
+    fileLists[listName].push({id,file});
+    renderFileList(listName);
+  }
+
   function removeFile(listName,id){
     fileLists[listName]=fileLists[listName].filter(f=>f.id!==id);
     renderFileList(listName);
   }
+
   function renderFileList(listName){
     const container=document.getElementById('list-'+listName);
     container.innerHTML='';
@@ -190,6 +199,28 @@
       container.appendChild(item);
     });
   }
+
+  // ── Ctrl+V paste support ──
+  document.addEventListener('paste', function(e){
+    const items = e.clipboardData && e.clipboardData.items;
+    if(!items) return;
+    for(let i=0; i<items.length; i++){
+      if(items[i].type.indexOf('image') !== -1){
+        const file = items[i].getAsFile();
+        if(!file) continue;
+        // Detect active list based on visible section
+        const tipo = document.getElementById('tipo').value;
+        const listName = tipo === 'pagamento' ? 'guias' : 'despesas';
+        // Rename with timestamp
+        const ext = file.type.split('/')[1] || 'png';
+        const renamed = new File([file], 'colado_'+Date.now()+'.'+ext, {type: file.type});
+        addFileToList(listName, renamed);
+        showToast('Imagem colada adicionada!', 'success');
+        break;
+      }
+    }
+  });
+
   function setTipo(tipo){
     document.getElementById('tipo').value=tipo;
     document.getElementById('btn-pagamento').classList.toggle('active',tipo==='pagamento');
@@ -200,28 +231,33 @@
       ?'Ex: Guia GRU — Reclamada Innova Steel X Reclamante João Silva, processo 0001234-56.2025.5.02.0001'
       :'Ex: Almoço pós-audiência, deslocamento ao fórum, Uber ida e volta...';
   }
+
   function toggleOutro(field){
     const select=document.getElementById(field+'-select');
     const outro=document.getElementById(field+'-outro');
     if(select.value==='outro'){outro.classList.remove('hidden');outro.focus();}
     else{outro.classList.add('hidden');outro.value='';}
   }
+
   function getFieldValue(field){
     const select=document.getElementById(field+'-select');
     if(select.value==='outro')return document.getElementById(field+'-outro').value.trim();
     return select.value;
   }
+
   function formatValor(input){
     let v=input.value.replace(/\D/g,'');
     if(!v){input.value='';return;}
     input.value=(parseInt(v)/100).toFixed(2).replace('.',',');
   }
+
   function showToast(msg,type){
     const t=document.getElementById('toast');
     t.textContent=msg;
     t.className='toast '+(type||'success')+' show';
     setTimeout(()=>t.classList.remove('show'),4500);
   }
+
   async function handleSubmit(e){
     e.preventDefault();
     const advogado=getFieldValue('advogado');
