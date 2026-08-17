@@ -199,6 +199,28 @@
     btn.innerHTML='Finalizar Pedido';
   }
 
+  // ── Ctrl+V paste support ──
+  document.addEventListener('paste', function(e){
+    const items = e.clipboardData && e.clipboardData.items;
+    if(!items) return;
+    for(let i=0; i<items.length; i++){
+      if(items[i].type.indexOf('image') !== -1){
+        const file = items[i].getAsFile();
+        if(!file) continue;
+        const ext = file.type.split('/')[1] || 'png';
+        const renamed = new File([file], 'colado_'+Date.now()+'.'+ext, {type: file.type});
+        // Simulate file input change
+        const dt = new DataTransfer();
+        dt.items.add(renamed);
+        const fileInput = document.getElementById('comprovante-file');
+        fileInput.files = dt.files;
+        onFileChange(fileInput);
+        showToast('Imagem colada adicionada!', 'success');
+        break;
+      }
+    }
+  });
+
   loadPendentes();
 </script>
 </body>
