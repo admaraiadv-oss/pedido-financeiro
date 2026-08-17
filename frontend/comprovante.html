@@ -6,7 +6,7 @@
 <title>Anexar Comprovante — Arai Advogados</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
-  :root { --navy:#1B2D4F;--navy-light:#2a4270;--navy-pale:#EEF2F8;--gold:#C9A96E;--ink:#1a1a1a;--ink2:#555;--border:#D8DDE6;--bg:#F7F8FA;--white:#ffffff;--green:#2E6B4F;--red:#b03a2e; }
+  :root{--navy:#1B2D4F;--navy-light:#2a4270;--navy-pale:#EEF2F8;--gold:#C9A96E;--ink:#1a1a1a;--ink2:#555;--border:#D8DDE6;--bg:#F7F8FA;--white:#ffffff;--green:#2E6B4F;--red:#b03a2e;}
   *{box-sizing:border-box;margin:0;padding:0;}
   body{font-family:'Inter',sans-serif;background:var(--bg);min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:0 0 80px;}
   .header-bar{width:100%;background:var(--navy);padding:28px 24px 24px;display:flex;flex-direction:column;align-items:center;gap:14px;margin-bottom:40px;}
@@ -22,6 +22,7 @@
   .field{margin-bottom:20px;}
   label{display:block;font-size:11px;font-weight:500;letter-spacing:0.1em;text-transform:uppercase;color:var(--navy);margin-bottom:7px;opacity:0.7;}
   select{width:100%;padding:10px 13px;border:1px solid var(--border);border-radius:2px;font-family:'Inter',sans-serif;font-size:14px;font-weight:300;color:var(--ink);background:white url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%231B2D4F' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 12px center;padding-right:32px;outline:none;appearance:none;cursor:pointer;}
+  .valor-badge{display:none;margin-top:8px;padding:8px 12px;background:var(--navy-pale);border-radius:2px;font-size:14px;color:var(--navy);font-weight:500;}
   .upload-area{border:1px dashed var(--border);border-radius:2px;padding:28px;text-align:center;cursor:pointer;transition:all 0.15s;position:relative;}
   .upload-area:hover{border-color:var(--navy);background:var(--navy-pale);}
   .upload-area.has-file{border-color:var(--green);background:#F3FAF6;}
@@ -60,7 +61,8 @@
   <div class="section-rule"><span>Pedido Pendente</span></div>
   <div class="field">
     <label>Selecione o pedido</label>
-    <select id="pedido-select"><option value="">Carregando...</option></select>
+    <select id="pedido-select" onchange="onPedidoChange()"><option value="">Carregando...</option></select>
+    <div class="valor-badge" id="valor-badge"></div>
   </div>
   <div class="section-rule" style="margin-top:24px"><span>Comprovante</span></div>
   <div class="field">
@@ -82,70 +84,91 @@
 </div>
 <div class="toast" id="toast"></div>
 <script>
-  async function loadPendentes() {
-    const select = document.getElementById('pedido-select');
-    try {
-      const res = await fetch('/pendentes');
-      const data = await res.json();
-      select.innerHTML = '<option value="">Selecione o pedido...</option>';
-      if (!data.files.length) { select.innerHTML = '<option value="">Nenhum pedido pendente</option>'; return; }
-      data.files.forEach(f => {
-        const opt = document.createElement('option');
-        opt.value = f.id;
-        opt.dataset.name = f.name;
-        opt.textContent = f.name.replace('PENDENTE ', '');
+  async function loadPendentes(){
+    const select=document.getElementById('pedido-select');
+    try{
+      const res=await fetch('/pendentes');
+      const data=await res.json();
+      select.innerHTML='<option value="">Selecione o pedido...</option>';
+      if(!data.files.length){select.innerHTML='<option value="">Nenhum pedido pendente</option>';return;}
+      data.files.forEach(f=>{
+        const opt=document.createElement('option');
+        opt.value=f.id;
+        opt.dataset.name=f.name;
+        opt.dataset.valor=f.valor||'';
+        const label=f.name.replace('PENDENTE ','');
+        opt.textContent=label;
         select.appendChild(opt);
       });
-    } catch { select.innerHTML = '<option value="">Erro ao carregar pedidos</option>'; }
+    }catch{select.innerHTML='<option value="">Erro ao carregar pedidos</option>';}
   }
-  function onFileChange(input) {
-    const nameEl = document.getElementById('file-name');
-    const area = document.getElementById('upload-area');
-    if (input.files[0]) {
-      nameEl.textContent = '✓ ' + input.files[0].name;
+
+  function onPedidoChange(){
+    const select=document.getElementById('pedido-select');
+    const badge=document.getElementById('valor-badge');
+    const opt=select.options[select.selectedIndex];
+    const valor=opt&&opt.dataset.valor;
+    if(valor&&select.value){
+      const formatted=parseFloat(valor.replace(',','.')).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+      badge.textContent='Valor: '+formatted;
+      badge.style.display='block';
+    }else{
+      badge.style.display='none';
+    }
+  }
+
+  function onFileChange(input){
+    const nameEl=document.getElementById('file-name');
+    const area=document.getElementById('upload-area');
+    if(input.files[0]){
+      nameEl.textContent='✓ '+input.files[0].name;
       nameEl.classList.remove('hidden');
       area.classList.add('has-file');
     }
   }
-  function showToast(msg, type) {
-    const t = document.getElementById('toast');
-    t.textContent = msg;
-    t.className = 'toast ' + (type||'success') + ' show';
-    setTimeout(() => t.classList.remove('show'), 4500);
+
+  function showToast(msg,type){
+    const t=document.getElementById('toast');
+    t.textContent=msg;
+    t.className='toast '+(type||'success')+' show';
+    setTimeout(()=>t.classList.remove('show'),4500);
   }
-  async function handleSubmit() {
-    const select = document.getElementById('pedido-select');
-    const fileInput = document.getElementById('comprovante-file');
-    const btn = document.getElementById('btn-submit');
-    if (!select.value) { showToast('Selecione o pedido.', 'error'); return; }
-    if (!fileInput.files[0]) { showToast('Anexe o comprovante.', 'error'); return; }
-    const file_name = select.options[select.selectedIndex].dataset.name;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Processando...';
-    const fd = new FormData();
-    fd.append('file_id', select.value);
-    fd.append('file_name', file_name);
-    fd.append('comprovante', fileInput.files[0]);
-    try {
-      const res = await fetch('/anexar-comprovante', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (res.ok && data.ok) {
-        document.getElementById('result-num').textContent = data.numero;
-        document.getElementById('result-file').textContent = data.filename;
-        document.getElementById('result-box').style.display = 'block';
-        showToast('Pedido finalizado!', 'success');
+
+  async function handleSubmit(){
+    const select=document.getElementById('pedido-select');
+    const fileInput=document.getElementById('comprovante-file');
+    const btn=document.getElementById('btn-submit');
+    if(!select.value){showToast('Selecione o pedido.','error');return;}
+    if(!fileInput.files[0]){showToast('Anexe o comprovante.','error');return;}
+    const file_name=select.options[select.selectedIndex].dataset.name;
+    btn.disabled=true;
+    btn.innerHTML='<span class="spinner"></span>Processando...';
+    const fd=new FormData();
+    fd.append('file_id',select.value);
+    fd.append('file_name',file_name);
+    fd.append('comprovante',fileInput.files[0]);
+    try{
+      const res=await fetch('/anexar-comprovante',{method:'POST',body:fd});
+      const data=await res.json();
+      if(res.ok&&data.ok){
+        document.getElementById('result-num').textContent=data.numero;
+        document.getElementById('result-file').textContent=data.filename;
+        document.getElementById('result-box').style.display='block';
+        document.getElementById('valor-badge').style.display='none';
+        showToast('Pedido finalizado!','success');
         loadPendentes();
-        select.value = '';
-        fileInput.value = '';
+        select.value='';
+        fileInput.value='';
         document.getElementById('file-name').classList.add('hidden');
         document.getElementById('upload-area').classList.remove('has-file');
-      } else {
-        showToast('Erro: ' + (data.detail || 'Tente novamente'), 'error');
+      }else{
+        showToast('Erro: '+(data.detail||'Tente novamente'),'error');
       }
-    } catch { showToast('Erro de conexão.', 'error'); }
-    btn.disabled = false;
-    btn.innerHTML = 'Finalizar Pedido';
+    }catch{showToast('Erro de conexão.','error');}
+    btn.disabled=false;
+    btn.innerHTML='Finalizar Pedido';
   }
+
   loadPendentes();
 </script>
 </body>
