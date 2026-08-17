@@ -23,6 +23,9 @@
   label{display:block;font-size:11px;font-weight:500;letter-spacing:0.1em;text-transform:uppercase;color:var(--navy);margin-bottom:7px;opacity:0.7;}
   select{width:100%;padding:10px 13px;border:1px solid var(--border);border-radius:2px;font-family:'Inter',sans-serif;font-size:14px;font-weight:300;color:var(--ink);background:white url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%231B2D4F' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 12px center;padding-right:32px;outline:none;appearance:none;cursor:pointer;}
   .valor-badge{display:none;margin-top:8px;padding:8px 12px;background:var(--navy-pale);border-radius:2px;font-size:14px;color:var(--navy);font-weight:500;}
+  .preview-box{display:none;margin-top:16px;border:1px solid var(--border);border-radius:2px;overflow:hidden;}
+  .preview-box iframe{width:100%;height:420px;border:none;display:block;}
+  .preview-label{font-size:11px;color:var(--ink2);padding:6px 10px;background:var(--bg);border-bottom:1px solid var(--border);letter-spacing:0.04em;}
   .upload-area{border:1px dashed var(--border);border-radius:2px;padding:28px;text-align:center;cursor:pointer;transition:all 0.15s;position:relative;}
   .upload-area:hover{border-color:var(--navy);background:var(--navy-pale);}
   .upload-area.has-file{border-color:var(--green);background:#F3FAF6;}
@@ -45,7 +48,7 @@
   .result-box strong{color:var(--navy);}
   .form-footer{margin-top:24px;padding-top:20px;border-top:1px solid var(--border);text-align:center;}
   .form-footer p{font-size:11px;color:var(--ink2);opacity:0.6;letter-spacing:0.04em;}
-  @media(max-width:480px){.card{padding:28px 24px;}}
+  @media(max-width:480px){.card{padding:28px 24px;}.preview-box iframe{height:280px;}}
 </style>
 </head>
 <body>
@@ -63,8 +66,12 @@
     <label>Selecione o pedido</label>
     <select id="pedido-select" onchange="onPedidoChange()"><option value="">Carregando...</option></select>
     <div class="valor-badge" id="valor-badge"></div>
+    <div class="preview-box" id="preview-box">
+      <div class="preview-label">Visualização do documento</div>
+      <iframe id="preview-iframe" src="" allowfullscreen></iframe>
+    </div>
   </div>
-  <div class="section-rule" style="margin-top:24px"><span>Comprovante</span></div>
+  <div class="section-rule" style="margin-top:8px"><span>Comprovante</span></div>
   <div class="field">
     <label>Comprovante de pagamento</label>
     <div class="upload-area" id="upload-area">
@@ -96,8 +103,8 @@
         opt.value=f.id;
         opt.dataset.name=f.name;
         opt.dataset.valor=f.valor||'';
-        const label=f.name.replace('PENDENTE ','');
-        opt.textContent=label;
+        opt.dataset.preview=f.previewLink||'';
+        opt.textContent=f.name.replace('PENDENTE ','');
         select.appendChild(opt);
       });
     }catch{select.innerHTML='<option value="">Erro ao carregar pedidos</option>';}
@@ -106,14 +113,35 @@
   function onPedidoChange(){
     const select=document.getElementById('pedido-select');
     const badge=document.getElementById('valor-badge');
+    const previewBox=document.getElementById('preview-box');
+    const iframe=document.getElementById('preview-iframe');
     const opt=select.options[select.selectedIndex];
+
+    if(!select.value){
+      badge.style.display='none';
+      previewBox.style.display='none';
+      iframe.src='';
+      return;
+    }
+
+    // Valor
     const valor=opt&&opt.dataset.valor;
-    if(valor&&select.value){
+    if(valor){
       const formatted=parseFloat(valor.replace(',','.')).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
       badge.textContent='Valor: '+formatted;
       badge.style.display='block';
     }else{
       badge.style.display='none';
+    }
+
+    // Preview
+    const preview=opt&&opt.dataset.preview;
+    if(preview){
+      iframe.src=preview;
+      previewBox.style.display='block';
+    }else{
+      previewBox.style.display='none';
+      iframe.src='';
     }
   }
 
@@ -155,6 +183,8 @@
         document.getElementById('result-file').textContent=data.filename;
         document.getElementById('result-box').style.display='block';
         document.getElementById('valor-badge').style.display='none';
+        document.getElementById('preview-box').style.display='none';
+        document.getElementById('preview-iframe').src='';
         showToast('Pedido finalizado!','success');
         loadPendentes();
         select.value='';
