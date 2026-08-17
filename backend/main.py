@@ -172,7 +172,7 @@ def list_pending(drive) -> list:
     folder_id = os.environ["DRIVE_FOLDER_PENDENTES"]
     results = drive.files().list(
         q=f"'{folder_id}' in parents and trashed=false",
-        fields="files(id, name)",
+        fields="files(id, name, webViewLink)",
         orderBy="name"
     ).execute()
     return results.get("files", [])
@@ -332,6 +332,13 @@ async def get_pendentes():
             valor_map = get_valor_by_drive_id(sheets, drive_ids)
             for f in files:
                 f["valor"] = valor_map.get(f["id"], "")
+                # Convert webViewLink to embeddable preview link
+                wvl = f.get("webViewLink", "")
+                if wvl:
+                    file_id = f["id"]
+                    f["previewLink"] = f"https://drive.google.com/file/d/{file_id}/preview"
+                else:
+                    f["previewLink"] = ""
         return {"files": files}
     except Exception as e:
         raise HTTPException(500, f"Erro ao listar pendentes: {e}")
