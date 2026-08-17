@@ -177,6 +177,24 @@ def list_pending(drive) -> list:
     ).execute()
     return results.get("files", [])
 
+def get_valor_by_drive_id(sheets, drive_ids: list) -> dict:
+    """Return dict of {drive_id: valor} by looking up column J in Sheets."""
+    if not drive_ids:
+        return {}
+    spreadsheet_id = os.environ["SHEETS_ID"]
+    sheet_name = os.environ.get("SHEET_NAME", "1")
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!A:J"
+    ).execute()
+    values = result.get("values", [])
+    mapping = {}
+    for row in values[1:]:
+        if len(row) > 9 and row[9] in drive_ids:
+            valor = row[3] if len(row) > 3 else ""
+            mapping[row[9]] = valor
+    return mapping
+
 # ── Sheets helpers ───────────────────────────────────────────────────────────
 
 def get_next_anexo_number(sheets) -> int:
@@ -307,8 +325,13 @@ async def submit(
 @app.get("/pendentes")
 async def get_pendentes():
     try:
-        drive, _ = get_services()
+        drive, sheets = get_services()
         files = list_pending(drive)
+        if files:
+            drive_ids = [f["id"] for f in files]
+            valor_map = get_valor_by_drive_id(sheets, drive_ids)
+            for f in files:
+                f["valor"] = valor_map.get(f["id"], "")
         return {"files": files}
     except Exception as e:
         raise HTTPException(500, f"Erro ao listar pendentes: {e}")
