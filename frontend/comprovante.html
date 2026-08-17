@@ -127,7 +127,7 @@
     // Valor
     const valor=opt&&opt.dataset.valor;
     if(valor){
-      const formatted=parseFloat(valor.replace('.','').replace(',','.')).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+      const v=parseFloat(valor.replace(',','.'));const formatted=isNaN(v)?valor:v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
       badge.textContent='Valor: '+formatted;
       badge.style.display='block';
     }else{
