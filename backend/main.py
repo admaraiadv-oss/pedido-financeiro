@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import httpx
+import zipfile
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -374,6 +375,170 @@ async def anexar_comprovante(
         raise HTTPException(500, f"Erro: {e}")
 
     return {"ok": True, "numero": next_num, "filename": final_name}
+
+
+
+@app.get("/buscar-relatorio")
+async def buscar_relatorio(cliente: str, data_inicio: str, data_fim: str):
+    try:
+        drive, sheets = get_services()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Erro de autenticação: {e}")
+
+    spreadsheet_id = os.environ["SHEETS_ID"]
+    sheet_name = os.environ.get("SHEET_NAME", "1")
+
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!A:J"
+    ).execute()
+    values = result.get("values", [])
+
+    from datetime import datetime as dt
+    def parse_date(s):
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                return dt.strptime(s, fmt)
+            except:
+                pass
+        return None
+
+    d_inicio = parse_date(data_inicio)
+    d_fim = parse_date(data_fim)
+    if not d_inicio or not d_fim:
+        raise HTTPException(400, "Datas inválidas.")
+
+    rows = []
+    for row in values[1:]:
+        if len(row) < 5:
+            continue
+        row_cliente = row[1] if len(row) > 1 else ""
+        if row_cliente.strip().lower() != cliente.strip().lower():
+            continue
+        row_date = parse_date(row[0]) if row else None
+        if not row_date:
+            continue
+        if d_inicio <= row_date <= d_fim:
+            rows.append({
+                "data": row[0],
+                "cliente": row[1] if len(row) > 1 else "",
+                "descricao_completa": row[6] if len(row) > 6 else "",
+                "valor": row[3] if len(row) > 3 else "",
+                "anexo": row[4] if len(row) > 4 else "",
+                "responsavel": row[5] if len(row) > 5 else "",
+            })
+
+    if not rows:
+        raise HTTPException(404, "Nenhum registro encontrado.")
+
+    return {"rows": rows}
+
+@app.get("/relatorio")
+def relatorio_page():
+    return FileResponse("../frontend/relatorio.html")
+
+@app.post("/gerar-zip")
+async def gerar_zip(
+    cliente: str = Form(...),
+    data_inicio: str = Form(...),
+    data_fim: str = Form(...),
+):
+    try:
+        drive, sheets = get_services()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Erro de autenticação: {e}")
+
+    spreadsheet_id = os.environ["SHEETS_ID"]
+    sheet_name = os.environ.get("SHEET_NAME", "1")
+
+    # Fetch all rows
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!A:J"
+    ).execute()
+    values = result.get("values", [])
+
+    # Parse date range
+    from datetime import datetime as dt
+    def parse_date(s):
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                return dt.strptime(s, fmt)
+            except:
+                pass
+        return None
+
+    d_inicio = parse_date(data_inicio)
+    d_fim = parse_date(data_fim)
+
+    if not d_inicio or not d_fim:
+        raise HTTPException(400, "Datas inválidas.")
+
+    # Filter rows by cliente and date range
+    matching = []
+    for row in values[1:]:
+        if len(row) < 5:
+            continue
+        row_cliente = row[1] if len(row) > 1 else ""
+        if row_cliente.strip().lower() != cliente.strip().lower():
+            continue
+        row_date = parse_date(row[0]) if row else None
+        if not row_date:
+            continue
+        if d_inicio <= row_date <= d_fim:
+            matching.append(row)
+
+    if not matching:
+        raise HTTPException(404, "Nenhum registro encontrado para esse cliente e período.")
+
+    # Build ZIP with available PDFs
+    folder_id = os.environ["DRIVE_FOLDER_COMPROVANTES"]
+
+    # List all files in comprovantes folder
+    all_files = drive.files().list(
+        q=f"'{folder_id}' in parents and trashed=false",
+        fields="files(id, name)",
+        pageSize=500
+    ).execute().get("files", [])
+
+    # Map filename prefix (number) to file
+    file_map = {}
+    for f in all_files:
+        name = f["name"]
+        parts = name.split(" ", 1)
+        if parts[0].isdigit():
+            file_map[parts[0]] = f
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for row in matching:
+            anexo = row[4] if len(row) > 4 else "x"
+            if anexo and anexo not in ("x", "pendente", ""):
+                f = file_map.get(str(int(float(anexo))))
+                if f:
+                    try:
+                        pdf_bytes = download_from_drive(drive, f["id"])
+                        zf.writestr(f["name"], pdf_bytes)
+                    except Exception as e:
+                        logger.warning(f"Erro ao baixar {f['name']}: {e}")
+
+    zip_buf.seek(0)
+    zip_bytes = zip_buf.getvalue()
+
+    if not zip_bytes:
+        raise HTTPException(404, "Nenhum arquivo de comprovante encontrado para o período.")
+
+    from fastapi.responses import Response
+    filename = f"Comprovantes_{cliente.replace(' ','_')}_{data_inicio}_{data_fim}.zip"
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 @app.get("/health")
 def health():
