@@ -311,7 +311,7 @@ async def submit(
 
     row = [
         data_hoje, cliente, descricao_formula,
-        valor.replace(",", "."),
+        valor,
         "pendente" if has_file else "x",
         advogado, descricao_completa, "Não", obs or "", file_drive_id,
     ]
