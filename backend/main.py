@@ -47,32 +47,40 @@ def save_token_to_render(token_json: str):
         render_api_key = os.environ.get("RENDER_API_KEY")
         service_id = os.environ.get("RENDER_SERVICE_ID")
         if not render_api_key or not service_id:
-            logger.warning("RENDER_API_KEY ou RENDER_SERVICE_ID não configurados — token não persistido.")
+            logger.warning("RENDER_API_KEY ou RENDER_SERVICE_ID não configurados.")
             return
-        url = f"https://api.render.com/v1/services/{service_id}/env-vars"
-        headers = {"Authorization": f"Bearer {render_api_key}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {render_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
         # Get current env vars
+        url = f"https://api.render.com/v1/services/{service_id}/env-vars"
         r = httpx.get(url, headers=headers, timeout=15)
+        logger.info(f"Render GET env-vars: {r.status_code}")
         if r.status_code != 200:
-            logger.error(f"Erro ao buscar env vars do Render: {r.text}")
+            logger.error(f"Erro ao buscar env vars: {r.text[:300]}")
             return
         env_vars = r.json()
-        # Update GOOGLE_TOKEN_JSON
+        # Build updated list
         updated = []
         found = False
         for ev in env_vars:
-            if ev.get("envVar", {}).get("key") == "GOOGLE_TOKEN_JSON":
+            key = ev.get("envVar", {}).get("key") or ev.get("key", "")
+            val = ev.get("envVar", {}).get("value") or ev.get("value", "")
+            if key == "GOOGLE_TOKEN_JSON":
                 updated.append({"key": "GOOGLE_TOKEN_JSON", "value": token_json})
                 found = True
-            else:
-                updated.append({"key": ev["envVar"]["key"], "value": ev["envVar"]["value"]})
+            elif key:
+                updated.append({"key": key, "value": val})
         if not found:
             updated.append({"key": "GOOGLE_TOKEN_JSON", "value": token_json})
         r2 = httpx.put(url, headers=headers, json=updated, timeout=15)
-        if r2.status_code == 200:
+        logger.info(f"Render PUT env-vars: {r2.status_code} - {r2.text[:200]}")
+        if r2.status_code in (200, 201):
             logger.info("Token salvo no Render com sucesso.")
         else:
-            logger.error(f"Erro ao salvar token no Render: {r2.text}")
+            logger.error(f"Erro ao salvar token: {r2.text[:300]}")
     except Exception as e:
         logger.error(f"Erro ao persistir token: {e}")
 
@@ -367,22 +375,14 @@ async def anexar_comprovante(
         merged = merge_pdfs([original_pdf, comp_pdf])
         base_name = file_name.replace("PENDENTE ", "")
         final_name = f"{next_num} {base_name}"
-        upload_to_drive(drive, merged, final_name, folder_comprovantes)
+        new_file_id, _ = upload_to_drive(drive, merged, final_name, folder_comprovantes)
         delete_from_drive(drive, file_id)
         update_anexo_in_sheets(sheets, file_id, next_num)
     except Exception as e:
         logger.error(f"Erro ao anexar comprovante: {e}")
         raise HTTPException(500, f"Erro: {e}")
 
-    # Get the drive_id of the newly uploaded file
-    folder_comprovantes = os.environ["DRIVE_FOLDER_COMPROVANTES"]
-    new_files = drive.files().list(
-        q=f"'{folder_comprovantes}' in parents and name='{final_name}' and trashed=false",
-        fields="files(id)",
-        pageSize=1
-    ).execute().get("files", [])
-    new_drive_id = new_files[0]["id"] if new_files else ""
-    return {"ok": True, "numero": next_num, "filename": final_name, "drive_id": new_drive_id}
+    return {"ok": True, "numero": next_num, "filename": final_name, "drive_id": new_file_id}
 
 
 
