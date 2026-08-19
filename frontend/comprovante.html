@@ -86,6 +86,7 @@
     <p>✅ Pedido finalizado com sucesso!</p>
     <p>Número do anexo: <strong id="result-num"></strong></p>
     <p>Arquivo: <strong id="result-file"></strong></p>
+    <button class="btn-download-pdf" id="btn-download-pdf" onclick="baixarPdf()" style="margin-top:12px;width:100%;padding:11px;background:var(--green);color:white;border:none;border-radius:2px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;cursor:pointer;letter-spacing:0.08em;text-transform:uppercase;">⬇ Baixar PDF para enviar ao advogado</button>
   </div>
   <div class="form-footer"><p>Arai Advogados &nbsp;·&nbsp; Uso interno</p></div>
 </div>
@@ -182,11 +183,38 @@
         document.getElementById('result-num').textContent=data.numero;
         document.getElementById('result-file').textContent=data.filename;
         document.getElementById('result-box').style.display='block';
+        ultimoFileId = data.drive_id;
+        ultimoFileName = data.filename;
         document.getElementById('valor-badge').style.display='none';
         document.getElementById('preview-box').style.display='none';
         document.getElementById('preview-iframe').src='';
         showToast('Pedido finalizado!','success');
-        loadPendentes();
+        let ultimoFileId = null;
+  let ultimoFileName = null;
+
+  async function baixarPdf(){
+    if(!ultimoFileId) return;
+    const btn = document.getElementById('btn-download-pdf');
+    btn.disabled = true;
+    btn.textContent = 'Baixando...';
+    try {
+      const res = await fetch('/baixar-comprovante/' + ultimoFileId);
+      if(!res.ok){ showToast('Erro ao baixar arquivo.', 'error'); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = ultimoFileName || 'comprovante.pdf';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch(e) {
+      showToast('Erro ao baixar.', 'error');
+    }
+    btn.disabled = false;
+    btn.textContent = '⬇ Baixar PDF para enviar ao advogado';
+  }
+
+  loadPendentes();
         select.value='';
         fileInput.value='';
         document.getElementById('file-name').classList.add('hidden');
@@ -220,6 +248,31 @@
       }
     }
   });
+
+  let ultimoFileId = null;
+  let ultimoFileName = null;
+
+  async function baixarPdf(){
+    if(!ultimoFileId) return;
+    const btn = document.getElementById('btn-download-pdf');
+    btn.disabled = true;
+    btn.textContent = 'Baixando...';
+    try {
+      const res = await fetch('/baixar-comprovante/' + ultimoFileId);
+      if(!res.ok){ showToast('Erro ao baixar arquivo.', 'error'); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = ultimoFileName || 'comprovante.pdf';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch(e) {
+      showToast('Erro ao baixar.', 'error');
+    }
+    btn.disabled = false;
+    btn.textContent = '⬇ Baixar PDF para enviar ao advogado';
+  }
 
   loadPendentes();
 </script>
