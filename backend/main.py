@@ -374,7 +374,15 @@ async def anexar_comprovante(
         logger.error(f"Erro ao anexar comprovante: {e}")
         raise HTTPException(500, f"Erro: {e}")
 
-    return {"ok": True, "numero": next_num, "filename": final_name}
+    # Get the drive_id of the newly uploaded file
+    folder_comprovantes = os.environ["DRIVE_FOLDER_COMPROVANTES"]
+    new_files = drive.files().list(
+        q=f"'{folder_comprovantes}' in parents and name='{final_name}' and trashed=false",
+        fields="files(id)",
+        pageSize=1
+    ).execute().get("files", [])
+    new_drive_id = new_files[0]["id"] if new_files else ""
+    return {"ok": True, "numero": next_num, "filename": final_name, "drive_id": new_drive_id}
 
 
 
@@ -537,6 +545,31 @@ async def gerar_zip(
     return Response(
         content=zip_bytes,
         media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@app.get("/baixar-comprovante/{file_id}")
+async def baixar_comprovante(file_id: str):
+    try:
+        drive, _ = get_services()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Erro de autenticação: {e}")
+
+    try:
+        pdf_bytes = download_from_drive(drive, file_id)
+        # Get filename
+        meta = drive.files().get(fileId=file_id, fields="name").execute()
+        filename = meta.get("name", "comprovante.pdf")
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao baixar arquivo: {e}")
+
+    from fastapi.responses import Response
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
