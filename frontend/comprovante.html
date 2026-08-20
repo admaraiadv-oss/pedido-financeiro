@@ -31,12 +31,15 @@
   .upload-area.has-file{border-color:var(--green);background:#F3FAF6;}
   .upload-area input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;}
   .upload-icon{font-size:28px;margin-bottom:8px;display:block;}
-  .upload-label{font-size:13px;color:var(--ink2);font-weight:400;}
+  .upload-label-text{font-size:13px;color:var(--ink2);font-weight:400;}
   .upload-filename{font-size:13px;color:var(--green);font-weight:500;margin-top:6px;}
   .hidden{display:none!important;}
   .btn-submit{width:100%;padding:14px;background:var(--navy);color:white;border:none;border-radius:2px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;cursor:pointer;margin-top:12px;letter-spacing:0.1em;text-transform:uppercase;transition:all 0.18s;}
   .btn-submit:hover{background:var(--navy-light);}
   .btn-submit:disabled{background:#b0b8c8;cursor:not-allowed;}
+  .btn-download{width:100%;padding:14px;background:var(--green);color:white;border:none;border-radius:2px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;cursor:pointer;margin-top:10px;letter-spacing:0.1em;text-transform:uppercase;transition:all 0.18s;}
+  .btn-download:hover{background:#235a3e;}
+  .btn-download:disabled{background:#b0b8c8;cursor:not-allowed;}
   .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite;margin-right:8px;vertical-align:middle;}
   @keyframes spin{to{transform:rotate(360deg);}}
   .toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--navy);color:white;padding:13px 24px;border-radius:2px;font-size:13px;transition:transform 0.3s ease;z-index:999;white-space:nowrap;}
@@ -64,145 +67,186 @@
   <div class="section-rule"><span>Pedido Pendente</span></div>
   <div class="field">
     <label>Selecione o pedido</label>
-    <select id="pedido-select" onchange="onPedidoChange()"><option value="">Carregando...</option></select>
+    <select id="pedido-select" onchange="onPedidoChange()">
+      <option value="">Carregando...</option>
+    </select>
     <div class="valor-badge" id="valor-badge"></div>
     <div class="preview-box" id="preview-box">
       <div class="preview-label">Visualização do documento</div>
       <iframe id="preview-iframe" src="" allowfullscreen></iframe>
     </div>
   </div>
+
   <div class="section-rule" style="margin-top:8px"><span>Comprovante</span></div>
   <div class="field">
     <label>Comprovante de pagamento</label>
     <div class="upload-area" id="upload-area">
       <input type="file" id="comprovante-file" accept=".pdf,.jpg,.jpeg,.png" onchange="onFileChange(this)">
       <span class="upload-icon">📎</span>
-      <div class="upload-label">Toque para selecionar ou tirar foto</div>
+      <div class="upload-label-text">Toque para selecionar ou tirar foto</div>
       <div class="upload-filename hidden" id="file-name"></div>
     </div>
   </div>
+
   <button class="btn-submit" id="btn-submit" onclick="handleSubmit()">Finalizar Pedido</button>
+
   <div class="result-box" id="result-box">
     <p>✅ Pedido finalizado com sucesso!</p>
     <p>Número do anexo: <strong id="result-num"></strong></p>
     <p>Arquivo: <strong id="result-file"></strong></p>
-    <button class="btn-download-pdf" id="btn-download-pdf" onclick="baixarPdf()" style="margin-top:12px;width:100%;padding:11px;background:var(--green);color:white;border:none;border-radius:2px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;cursor:pointer;letter-spacing:0.08em;text-transform:uppercase;">⬇ Baixar PDF para enviar ao advogado</button>
+    <button class="btn-download" id="btn-download" onclick="baixarPdf()">⬇ Baixar PDF para enviar ao advogado</button>
   </div>
+
   <div class="form-footer"><p>Arai Advogados &nbsp;·&nbsp; Uso interno</p></div>
 </div>
 <div class="toast" id="toast"></div>
-<script>
-  let ultimoFileId = null;
-  let ultimoFileName = null;
 
-  async function loadPendentes(){
-    const select=document.getElementById('pedido-select');
-    try{
-      const res=await fetch('/pendentes');
-      const data=await res.json();
-      select.innerHTML='<option value="">Selecione o pedido...</option>';
-      if(!data.files.length){select.innerHTML='<option value="">Nenhum pedido pendente</option>';return;}
-      data.files.forEach(f=>{
-        const opt=document.createElement('option');
-        opt.value=f.id;
-        opt.dataset.name=f.name;
-        opt.dataset.valor=f.valor||'';
-        opt.dataset.preview=f.previewLink||'';
-        opt.textContent=f.name.replace('PENDENTE ','');
+<script>
+  var ultimoFileId = null;
+  var ultimoFileName = null;
+
+  async function loadPendentes() {
+    var select = document.getElementById('pedido-select');
+    try {
+      var res = await fetch('/pendentes');
+      var data = await res.json();
+      select.innerHTML = '<option value="">Selecione o pedido...</option>';
+      if (!data.files || data.files.length === 0) {
+        select.innerHTML = '<option value="">Nenhum pedido pendente</option>';
+        return;
+      }
+      data.files.forEach(function(f) {
+        var opt = document.createElement('option');
+        opt.value = f.id;
+        opt.dataset.name = f.name;
+        opt.dataset.valor = f.valor || '';
+        opt.dataset.preview = f.previewLink || '';
+        opt.textContent = f.name.replace('PENDENTE ', '');
         select.appendChild(opt);
       });
-    }catch{select.innerHTML='<option value="">Erro ao carregar pedidos</option>';}
+    } catch(e) {
+      select.innerHTML = '<option value="">Erro ao carregar pedidos</option>';
+    }
   }
 
-  function onPedidoChange(){
-    const select=document.getElementById('pedido-select');
-    const badge=document.getElementById('valor-badge');
-    const previewBox=document.getElementById('preview-box');
-    const iframe=document.getElementById('preview-iframe');
-    const opt=select.options[select.selectedIndex];
+  function onPedidoChange() {
+    var select = document.getElementById('pedido-select');
+    var badge = document.getElementById('valor-badge');
+    var previewBox = document.getElementById('preview-box');
+    var iframe = document.getElementById('preview-iframe');
+    var opt = select.options[select.selectedIndex];
 
-    if(!select.value){
-      badge.style.display='none';
-      previewBox.style.display='none';
-      iframe.src='';
+    if (!select.value) {
+      badge.style.display = 'none';
+      previewBox.style.display = 'none';
+      iframe.src = '';
       return;
     }
 
-    // Valor
-    const valor=opt&&opt.dataset.valor;
-    if(valor){
-      const v=parseFloat(valor.replace(',','.'));const formatted=isNaN(v)?valor:v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
-      badge.textContent='Valor: '+formatted;
-      badge.style.display='block';
-    }else{
-      badge.style.display='none';
+    var valor = opt ? opt.dataset.valor : '';
+    if (valor) {
+      var n = parseFloat(valor.replace(',', '.'));
+      var formatted = isNaN(n) ? valor : n.toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
+      badge.textContent = 'Valor: ' + formatted;
+      badge.style.display = 'block';
+    } else {
+      badge.style.display = 'none';
     }
 
-    // Preview
-    const preview=opt&&opt.dataset.preview;
-    if(preview){
-      iframe.src=preview;
-      previewBox.style.display='block';
-    }else{
-      previewBox.style.display='none';
-      iframe.src='';
+    var preview = opt ? opt.dataset.preview : '';
+    if (preview) {
+      iframe.src = preview;
+      previewBox.style.display = 'block';
+    } else {
+      previewBox.style.display = 'none';
+      iframe.src = '';
     }
   }
 
-  function onFileChange(input){
-    const nameEl=document.getElementById('file-name');
-    const area=document.getElementById('upload-area');
-    if(input.files[0]){
-      nameEl.textContent='✓ '+input.files[0].name;
+  function onFileChange(input) {
+    var nameEl = document.getElementById('file-name');
+    var area = document.getElementById('upload-area');
+    if (input.files && input.files[0]) {
+      nameEl.textContent = '✓ ' + input.files[0].name;
       nameEl.classList.remove('hidden');
       area.classList.add('has-file');
     }
   }
 
-  function showToast(msg,type){
-    const t=document.getElementById('toast');
-    t.textContent=msg;
-    t.className='toast '+(type||'success')+' show';
-    setTimeout(()=>t.classList.remove('show'),4500);
+  function showToast(msg, type) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast ' + (type || 'success') + ' show';
+    setTimeout(function() { t.classList.remove('show'); }, 4500);
   }
 
-  async function handleSubmit(){
-    const select=document.getElementById('pedido-select');
-    const fileInput=document.getElementById('comprovante-file');
-    const btn=document.getElementById('btn-submit');
-    if(!select.value){showToast('Selecione o pedido.','error');return;}
-    if(!fileInput.files[0]){showToast('Anexe o comprovante.','error');return;}
-    const file_name=select.options[select.selectedIndex].dataset.name;
-    btn.disabled=true;
-    btn.innerHTML='<span class="spinner"></span>Processando...';
-    const fd=new FormData();
-    fd.append('file_id',select.value);
-    fd.append('file_name',file_name);
-    fd.append('comprovante',fileInput.files[0]);
-    try{
-      const res=await fetch('/anexar-comprovante',{method:'POST',body:fd});
-      const data=await res.json();
-      if(res.ok&&data.ok){
-        document.getElementById('result-num').textContent=data.numero;
-        document.getElementById('result-file').textContent=data.filename;
-        document.getElementById('result-box').style.display='block';
+  async function handleSubmit() {
+    var select = document.getElementById('pedido-select');
+    var fileInput = document.getElementById('comprovante-file');
+    var btn = document.getElementById('btn-submit');
+
+    if (!select.value) { showToast('Selecione o pedido.', 'error'); return; }
+    if (!fileInput.files || !fileInput.files[0]) { showToast('Anexe o comprovante.', 'error'); return; }
+
+    var file_name = select.options[select.selectedIndex].dataset.name;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Processando...';
+
+    var fd = new FormData();
+    fd.append('file_id', select.value);
+    fd.append('file_name', file_name);
+    fd.append('comprovante', fileInput.files[0]);
+
+    try {
+      var res = await fetch('/anexar-comprovante', {method: 'POST', body: fd});
+      var data = await res.json();
+
+      if (res.ok && data.ok) {
+        document.getElementById('result-num').textContent = data.numero;
+        document.getElementById('result-file').textContent = data.filename;
+        document.getElementById('result-box').style.display = 'block';
+        document.getElementById('valor-badge').style.display = 'none';
+        document.getElementById('preview-box').style.display = 'none';
+        document.getElementById('preview-iframe').src = '';
+
         ultimoFileId = data.drive_id;
         ultimoFileName = data.filename;
-        document.getElementById('valor-badge').style.display='none';
-        document.getElementById('preview-box').style.display='none';
-        document.getElementById('preview-iframe').src='';
-        showToast('Pedido finalizado!','success');
-        async function baixarPdf(){
-    if(!ultimoFileId){ alert('drive_id vazio — não foi possível baixar.'); return; }
-    const btn = document.getElementById('btn-download-pdf');
+
+        showToast('Pedido finalizado!', 'success');
+        loadPendentes();
+        select.value = '';
+        fileInput.value = '';
+        document.getElementById('file-name').classList.add('hidden');
+        document.getElementById('upload-area').classList.remove('has-file');
+      } else {
+        showToast('Erro: ' + (data.detail || 'Tente novamente'), 'error');
+      }
+    } catch(e) {
+      showToast('Erro de conexão.', 'error');
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = 'Finalizar Pedido';
+  }
+
+  async function baixarPdf() {
+    if (!ultimoFileId) {
+      showToast('ID do arquivo não encontrado.', 'error');
+      return;
+    }
+    var btn = document.getElementById('btn-download');
     btn.disabled = true;
     btn.textContent = 'Baixando...';
     try {
-      const res = await fetch('/baixar-comprovante/' + ultimoFileId);
-      if(!res.ok){ showToast('Erro ao baixar arquivo.', 'error'); return; }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      var res = await fetch('/baixar-comprovante/' + ultimoFileId);
+      if (!res.ok) {
+        showToast('Erro ao baixar arquivo.', 'error');
+        return;
+      }
+      var blob = await res.blob();
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
       a.href = url;
       a.download = ultimoFileName || 'comprovante.pdf';
       a.click();
@@ -213,6 +257,27 @@
     btn.disabled = false;
     btn.textContent = '⬇ Baixar PDF para enviar ao advogado';
   }
+
+  // Ctrl+V paste support
+  document.addEventListener('paste', function(e) {
+    var items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        var file = items[i].getAsFile();
+        if (!file) continue;
+        var ext = file.type.split('/')[1] || 'png';
+        var renamed = new File([file], 'colado_' + Date.now() + '.' + ext, {type: file.type});
+        var dt = new DataTransfer();
+        dt.items.add(renamed);
+        var fileInput = document.getElementById('comprovante-file');
+        fileInput.files = dt.files;
+        onFileChange(fileInput);
+        showToast('Imagem colada adicionada!', 'success');
+        break;
+      }
+    }
+  });
 
   loadPendentes();
 </script>
