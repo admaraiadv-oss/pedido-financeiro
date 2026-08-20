@@ -92,6 +92,9 @@
 </div>
 <div class="toast" id="toast"></div>
 <script>
+  let ultimoFileId = null;
+  let ultimoFileName = null;
+
   async function loadPendentes(){
     const select=document.getElementById('pedido-select');
     try{
@@ -189,71 +192,8 @@
         document.getElementById('preview-box').style.display='none';
         document.getElementById('preview-iframe').src='';
         showToast('Pedido finalizado!','success');
-        let ultimoFileId = null;
-  let ultimoFileName = null;
-
-  async function baixarPdf(){
-    if(!ultimoFileId) return;
-    const btn = document.getElementById('btn-download-pdf');
-    btn.disabled = true;
-    btn.textContent = 'Baixando...';
-    try {
-      const res = await fetch('/baixar-comprovante/' + ultimoFileId);
-      if(!res.ok){ showToast('Erro ao baixar arquivo.', 'error'); return; }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = ultimoFileName || 'comprovante.pdf';
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch(e) {
-      showToast('Erro ao baixar.', 'error');
-    }
-    btn.disabled = false;
-    btn.textContent = '⬇ Baixar PDF para enviar ao advogado';
-  }
-
-  loadPendentes();
-        select.value='';
-        fileInput.value='';
-        document.getElementById('file-name').classList.add('hidden');
-        document.getElementById('upload-area').classList.remove('has-file');
-      }else{
-        showToast('Erro: '+(data.detail||'Tente novamente'),'error');
-      }
-    }catch{showToast('Erro de conexão.','error');}
-    btn.disabled=false;
-    btn.innerHTML='Finalizar Pedido';
-  }
-
-  // ── Ctrl+V paste support ──
-  document.addEventListener('paste', function(e){
-    const items = e.clipboardData && e.clipboardData.items;
-    if(!items) return;
-    for(let i=0; i<items.length; i++){
-      if(items[i].type.indexOf('image') !== -1){
-        const file = items[i].getAsFile();
-        if(!file) continue;
-        const ext = file.type.split('/')[1] || 'png';
-        const renamed = new File([file], 'colado_'+Date.now()+'.'+ext, {type: file.type});
-        // Simulate file input change
-        const dt = new DataTransfer();
-        dt.items.add(renamed);
-        const fileInput = document.getElementById('comprovante-file');
-        fileInput.files = dt.files;
-        onFileChange(fileInput);
-        showToast('Imagem colada adicionada!', 'success');
-        break;
-      }
-    }
-  });
-
-  let ultimoFileId = null;
-  let ultimoFileName = null;
-
-  async function baixarPdf(){
-    if(!ultimoFileId) return;
+        async function baixarPdf(){
+    if(!ultimoFileId){ alert('drive_id vazio — não foi possível baixar.'); return; }
     const btn = document.getElementById('btn-download-pdf');
     btn.disabled = true;
     btn.textContent = 'Baixando...';
