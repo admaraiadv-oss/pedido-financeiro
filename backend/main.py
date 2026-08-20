@@ -573,6 +573,6 @@ async def baixar_comprovante(file_id: str):
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok"}
