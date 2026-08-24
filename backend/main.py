@@ -549,6 +549,46 @@ async def gerar_zip(
     )
 
 
+
+@app.post("/finalizar-sem-comprovante")
+async def finalizar_sem_comprovante(
+    file_id: str = Form(...),
+    file_name: str = Form(...),
+):
+    try:
+        drive, sheets = get_services()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Erro de autenticação: {e}")
+
+    folder_comprovantes = os.environ["DRIVE_FOLDER_COMPROVANTES"]
+
+    try:
+        next_num = get_next_anexo_number(sheets)
+
+        # Download original file from Pendentes
+        original_pdf = download_from_drive(drive, file_id)
+
+        # Build final filename
+        base_name = file_name.replace("PENDENTE ", "")
+        final_name = f"{next_num} {base_name}"
+
+        # Upload to Comprovantes (no merge, just move)
+        new_file_id, _ = upload_to_drive(drive, original_pdf, final_name, folder_comprovantes)
+
+        # Delete from Pendentes
+        delete_from_drive(drive, file_id)
+
+        # Update Sheets
+        update_anexo_in_sheets(sheets, file_id, next_num)
+
+    except Exception as e:
+        logger.error(f"Erro ao finalizar sem comprovante: {e}")
+        raise HTTPException(500, f"Erro: {e}")
+
+    return {"ok": True, "numero": next_num, "filename": final_name, "drive_id": new_file_id}
+
 @app.get("/baixar-comprovante/{file_id}")
 async def baixar_comprovante(file_id: str):
     try:
