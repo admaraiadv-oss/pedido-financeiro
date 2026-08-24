@@ -40,6 +40,9 @@
   .btn-download{width:100%;padding:14px;background:var(--green);color:white;border:none;border-radius:2px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;cursor:pointer;margin-top:10px;letter-spacing:0.1em;text-transform:uppercase;transition:all 0.18s;}
   .btn-download:hover{background:#235a3e;}
   .btn-download:disabled{background:#b0b8c8;cursor:not-allowed;}
+  .btn-sem-comprovante{width:100%;padding:11px;background:transparent;color:var(--ink2);border:1px solid var(--border);border-radius:2px;font-family:'Inter',sans-serif;font-size:12px;font-weight:400;cursor:pointer;margin-top:8px;letter-spacing:0.06em;text-transform:uppercase;transition:all 0.18s;}
+  .btn-sem-comprovante:hover{border-color:var(--navy);color:var(--navy);}
+  .btn-sem-comprovante:disabled{opacity:0.4;cursor:not-allowed;}
   .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite;margin-right:8px;vertical-align:middle;}
   @keyframes spin{to{transform:rotate(360deg);}}
   .toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--navy);color:white;padding:13px 24px;border-radius:2px;font-size:13px;transition:transform 0.3s ease;z-index:999;white-space:nowrap;}
@@ -89,6 +92,7 @@
   </div>
 
   <button class="btn-submit" id="btn-submit" onclick="handleSubmit()">Finalizar Pedido</button>
+  <button class="btn-sem-comprovante" id="btn-sem-comprovante" onclick="handleSemComprovante()">Finalizar sem comprovante</button>
 
   <div class="result-box" id="result-box">
     <p>✅ Pedido finalizado com sucesso!</p>
@@ -214,7 +218,52 @@
         ultimoFileName = data.filename;
 
         showToast('Pedido finalizado!', 'success');
+        async function handleSemComprovante() {
+    var select = document.getElementById('pedido-select');
+    var btn = document.getElementById('btn-sem-comprovante');
+
+    if (!select.value) { showToast('Selecione o pedido.', 'error'); return; }
+
+    if (!confirm('Finalizar este pedido sem anexar comprovante?')) return;
+
+    var file_name = select.options[select.selectedIndex].dataset.name;
+    btn.disabled = true;
+    btn.textContent = 'Processando...';
+
+    var fd = new FormData();
+    fd.append('file_id', select.value);
+    fd.append('file_name', file_name);
+
+    try {
+      var res = await fetch('/finalizar-sem-comprovante', {method: 'POST', body: fd});
+      var data = await res.json();
+
+      if (res.ok && data.ok) {
+        document.getElementById('result-num').textContent = data.numero;
+        document.getElementById('result-file').textContent = data.filename;
+        document.getElementById('result-box').style.display = 'block';
+        document.getElementById('valor-badge').style.display = 'none';
+        document.getElementById('preview-box').style.display = 'none';
+        document.getElementById('preview-iframe').src = '';
+        ultimoFileId = data.drive_id;
+        ultimoFileName = data.filename;
+        showToast('Pedido finalizado!', 'success');
         loadPendentes();
+        select.value = '';
+        document.getElementById('file-name').classList.add('hidden');
+        document.getElementById('upload-area').classList.remove('has-file');
+      } else {
+        showToast('Erro: ' + (data.detail || 'Tente novamente'), 'error');
+      }
+    } catch(e) {
+      showToast('Erro de conexão.', 'error');
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Finalizar sem comprovante';
+  }
+
+  loadPendentes();
         select.value = '';
         fileInput.value = '';
         document.getElementById('file-name').classList.add('hidden');
@@ -278,6 +327,51 @@
       }
     }
   });
+
+  async function handleSemComprovante() {
+    var select = document.getElementById('pedido-select');
+    var btn = document.getElementById('btn-sem-comprovante');
+
+    if (!select.value) { showToast('Selecione o pedido.', 'error'); return; }
+
+    if (!confirm('Finalizar este pedido sem anexar comprovante?')) return;
+
+    var file_name = select.options[select.selectedIndex].dataset.name;
+    btn.disabled = true;
+    btn.textContent = 'Processando...';
+
+    var fd = new FormData();
+    fd.append('file_id', select.value);
+    fd.append('file_name', file_name);
+
+    try {
+      var res = await fetch('/finalizar-sem-comprovante', {method: 'POST', body: fd});
+      var data = await res.json();
+
+      if (res.ok && data.ok) {
+        document.getElementById('result-num').textContent = data.numero;
+        document.getElementById('result-file').textContent = data.filename;
+        document.getElementById('result-box').style.display = 'block';
+        document.getElementById('valor-badge').style.display = 'none';
+        document.getElementById('preview-box').style.display = 'none';
+        document.getElementById('preview-iframe').src = '';
+        ultimoFileId = data.drive_id;
+        ultimoFileName = data.filename;
+        showToast('Pedido finalizado!', 'success');
+        loadPendentes();
+        select.value = '';
+        document.getElementById('file-name').classList.add('hidden');
+        document.getElementById('upload-area').classList.remove('has-file');
+      } else {
+        showToast('Erro: ' + (data.detail || 'Tente novamente'), 'error');
+      }
+    } catch(e) {
+      showToast('Erro de conexão.', 'error');
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Finalizar sem comprovante';
+  }
 
   loadPendentes();
 </script>
