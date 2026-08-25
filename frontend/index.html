@@ -102,12 +102,8 @@
             <option>Innova Steel</option><option>Rhema</option><option>Kioel</option>
             <option>Pettit</option><option>Harmony</option><option>Prime</option><option>Onix</option>
           </optgroup>
-          <optgroup label="Escritório">
-            <option>Arai</option>
-          </optgroup>
-          <optgroup label="Avulso">
-            <option value="outro">Outro cliente...</option>
-          </optgroup>
+          <optgroup label="Escritório"><option>Arai</option></optgroup>
+          <optgroup label="Avulso"><option value="outro">Outro cliente...</option></optgroup>
         </select>
         <input type="text" id="cliente-outro" class="hidden" placeholder="Nome completo do cliente" style="margin-top:8px">
       </div>
@@ -168,12 +164,12 @@
     input.type='file';input.accept='.pdf,.jpg,.jpeg,.png';
     input.onchange=()=>{
       if(!input.files[0])return;
-      addFileToList(listName, input.files[0]);
+      addFileToList(listName,input.files[0]);
     };
     input.click();
   }
 
-  function addFileToList(listName, file){
+  function addFileToList(listName,file){
     const id=Date.now()+Math.random();
     fileLists[listName].push({id,file});
     renderFileList(listName);
@@ -200,22 +196,19 @@
     });
   }
 
-  // ── Ctrl+V paste support ──
-  document.addEventListener('paste', function(e){
-    const items = e.clipboardData && e.clipboardData.items;
-    if(!items) return;
-    for(let i=0; i<items.length; i++){
-      if(items[i].type.indexOf('image') !== -1){
-        const file = items[i].getAsFile();
-        if(!file) continue;
-        // Detect active list based on visible section
-        const tipo = document.getElementById('tipo').value;
-        const listName = tipo === 'pagamento' ? 'guias' : 'despesas';
-        // Rename with timestamp
-        const ext = file.type.split('/')[1] || 'png';
-        const renamed = new File([file], 'colado_'+Date.now()+'.'+ext, {type: file.type});
-        addFileToList(listName, renamed);
-        showToast('Imagem colada adicionada!', 'success');
+  document.addEventListener('paste',function(e){
+    const items=e.clipboardData&&e.clipboardData.items;
+    if(!items)return;
+    for(let i=0;i<items.length;i++){
+      if(items[i].type.indexOf('image')!==-1){
+        const file=items[i].getAsFile();
+        if(!file)continue;
+        const ext=file.type.split('/')[1]||'png';
+        const renamed=new File([file],'colado_'+Date.now()+'.'+ext,{type:file.type});
+        const tipo=document.getElementById('tipo').value;
+        const listName=tipo==='pagamento'?'guias':'despesas';
+        addFileToList(listName,renamed);
+        showToast('Imagem colada adicionada!','success');
         break;
       }
     }
@@ -260,13 +253,22 @@
 
   async function handleSubmit(e){
     e.preventDefault();
-    const advogado=getFieldValue('advogado');
-    const cliente=getFieldValue('cliente');
-    if(!advogado){showToast('Selecione ou informe seu nome.','error');return;}
-    if(!cliente){showToast('Selecione ou informe o cliente.','error');return;}
     const btn=document.getElementById('btn-submit');
+    if(btn.disabled)return;
     btn.disabled=true;
     btn.innerHTML='<span class="spinner"></span>Enviando...';
+
+    const advogado=getFieldValue('advogado');
+    const cliente=getFieldValue('cliente');
+    if(!advogado){
+      showToast('Selecione ou informe seu nome.','error');
+      btn.disabled=false;btn.innerHTML='Enviar Pedido';return;
+    }
+    if(!cliente){
+      showToast('Selecione ou informe o cliente.','error');
+      btn.disabled=false;btn.innerHTML='Enviar Pedido';return;
+    }
+
     const fd=new FormData();
     fd.append('tipo',document.getElementById('tipo').value);
     fd.append('advogado',advogado);
@@ -278,6 +280,7 @@
     const tipo=document.getElementById('tipo').value;
     const lists=tipo==='pagamento'?['guias']:['despesas'];
     lists.forEach(l=>fileLists[l].forEach(({file})=>fd.append('arquivos',file)));
+
     try{
       const res=await fetch('/submit',{method:'POST',body:fd});
       const data=await res.json();
@@ -290,7 +293,10 @@
       }else{
         showToast('Erro: '+(data.detail||'Tente novamente.'),'error');
       }
-    }catch{showToast('Erro de conexão. Tente novamente.','error');}
+    }catch{
+      showToast('Erro de conexão. Tente novamente.','error');
+    }
+
     btn.disabled=false;
     btn.innerHTML='Enviar Pedido';
   }
