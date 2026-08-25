@@ -52,6 +52,17 @@
   .result-box{background:var(--navy-pale);border:1px solid var(--border);border-radius:2px;padding:20px;margin-top:16px;display:none;}
   .result-box p{font-size:14px;color:var(--ink);margin-bottom:6px;}
   .result-box strong{color:var(--navy);}
+  .upload-list{display:flex;flex-direction:column;gap:6px;margin-bottom:6px;}
+  .upload-item{display:flex;align-items:center;gap:10px;border:1px solid var(--green);border-radius:2px;padding:9px 12px;background:#F3FAF6;}
+  .upload-icon-file{font-size:15px;flex-shrink:0;color:var(--green);}
+  .upload-item-info{flex:1;min-width:0;}
+  .upload-item-name{font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .upload-item-size{font-size:11px;color:var(--ink2);margin-top:1px;}
+  .upload-item-remove{width:22px;height:22px;border:none;background:none;cursor:pointer;color:#bbb;font-size:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:color 0.15s;}
+  .upload-item-remove:hover{color:var(--red);}
+  .btn-add-comp{display:flex;align-items:center;gap:8px;padding:9px 13px;border:1px dashed var(--border);border-radius:2px;background:transparent;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:400;color:var(--ink2);width:100%;transition:all 0.15s;letter-spacing:0.02em;}
+  .btn-add-comp:hover{border-color:var(--navy);color:var(--navy);background:var(--navy-pale);}
+  .paste-hint-comp{font-size:11px;color:var(--ink2);opacity:0.6;margin-top:6px;text-align:center;}
   .form-footer{margin-top:24px;padding-top:20px;border-top:1px solid var(--border);text-align:center;}
   .form-footer p{font-size:11px;color:var(--ink2);opacity:0.6;letter-spacing:0.04em;}
   @media(max-width:480px){.card{padding:28px 24px;}.preview-box iframe{height:280px;}}
@@ -82,13 +93,10 @@
 
   <div class="section-rule" style="margin-top:8px"><span>Comprovante</span></div>
   <div class="field">
-    <label>Comprovante de pagamento</label>
-    <div class="upload-area" id="upload-area">
-      <input type="file" id="comprovante-file" accept=".pdf,.jpg,.jpeg,.png" onchange="onFileChange(this)">
-      <span class="upload-icon">📎</span>
-      <div class="upload-label-text">Toque para selecionar ou tirar foto</div>
-      <div class="upload-filename hidden" id="file-name"></div>
-    </div>
+    <label>Comprovante(s) de pagamento</label>
+    <div class="upload-list" id="list-comprovantes"></div>
+    <button type="button" class="btn-add-comp" onclick="addComprovante()">+ Adicionar comprovante</button>
+    <p class="paste-hint-comp">Você também pode colar imagens com Ctrl+V</p>
   </div>
 
   <button class="btn-submit" id="btn-submit" onclick="handleSubmit()">Finalizar Pedido</button>
@@ -167,14 +175,40 @@
     }
   }
 
-  function onFileChange(input) {
-    var nameEl = document.getElementById('file-name');
-    var area = document.getElementById('upload-area');
-    if (input.files && input.files[0]) {
-      nameEl.textContent = '✓ ' + input.files[0].name;
-      nameEl.classList.remove('hidden');
-      area.classList.add('has-file');
-    }
+  var comprovantes = [];
+
+  function addComprovante() {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.pdf,.jpg,.jpeg,.png';
+    input.onchange = function() {
+      if (!input.files[0]) return;
+      var id = Date.now() + Math.random();
+      comprovantes.push({id: id, file: input.files[0]});
+      renderComprovantes();
+    };
+    input.click();
+  }
+
+  function removeComprovante(id) {
+    comprovantes = comprovantes.filter(function(f) { return f.id !== id; });
+    renderComprovantes();
+  }
+
+  function renderComprovantes() {
+    var container = document.getElementById('list-comprovantes');
+    container.innerHTML = '';
+    comprovantes.forEach(function(item) {
+      var el = document.createElement('div');
+      el.className = 'upload-item';
+      el.innerHTML = '<span class="upload-icon-file">✓</span>' +
+        '<div class="upload-item-info">' +
+          '<div class="upload-item-name">' + item.file.name + '</div>' +
+          '<div class="upload-item-size">' + (item.file.size/1024).toFixed(0) + ' KB</div>' +
+        '</div>' +
+        '<button type="button" class="upload-item-remove" onclick="removeComprovante(' + item.id + ')" title="Remover">×</button>';
+      container.appendChild(el);
+    });
   }
 
   function showToast(msg, type) {
@@ -190,7 +224,7 @@
     var btn = document.getElementById('btn-submit');
 
     if (!select.value) { showToast('Selecione o pedido.', 'error'); return; }
-    if (!fileInput.files || !fileInput.files[0]) { showToast('Anexe o comprovante.', 'error'); return; }
+    if (comprovantes.length === 0) { showToast('Anexe pelo menos um comprovante.', 'error'); return; }
 
     var file_name = select.options[select.selectedIndex].dataset.name;
 
@@ -200,7 +234,9 @@
     var fd = new FormData();
     fd.append('file_id', select.value);
     fd.append('file_name', file_name);
-    fd.append('comprovante', fileInput.files[0]);
+    comprovantes.forEach(function(item) {
+      fd.append('comprovante', item.file);
+    });
 
     try {
       var res = await fetch('/anexar-comprovante', {method: 'POST', body: fd});
@@ -250,8 +286,8 @@
         showToast('Pedido finalizado!', 'success');
         loadPendentes();
         select.value = '';
-        document.getElementById('file-name').classList.add('hidden');
-        document.getElementById('upload-area').classList.remove('has-file');
+        comprovantes = [];
+        renderComprovantes();
       } else {
         showToast('Erro: ' + (data.detail || 'Tente novamente'), 'error');
       }
@@ -266,8 +302,8 @@
   loadPendentes();
         select.value = '';
         fileInput.value = '';
-        document.getElementById('file-name').classList.add('hidden');
-        document.getElementById('upload-area').classList.remove('has-file');
+        comprovantes = [];
+        renderComprovantes();
       } else {
         showToast('Erro: ' + (data.detail || 'Tente novamente'), 'error');
       }
@@ -317,11 +353,9 @@
         if (!file) continue;
         var ext = file.type.split('/')[1] || 'png';
         var renamed = new File([file], 'colado_' + Date.now() + '.' + ext, {type: file.type});
-        var dt = new DataTransfer();
-        dt.items.add(renamed);
-        var fileInput = document.getElementById('comprovante-file');
-        fileInput.files = dt.files;
-        onFileChange(fileInput);
+        var id = Date.now() + Math.random();
+        comprovantes.push({id: id, file: renamed});
+        renderComprovantes();
         showToast('Imagem colada adicionada!', 'success');
         break;
       }
@@ -360,8 +394,8 @@
         showToast('Pedido finalizado!', 'success');
         loadPendentes();
         select.value = '';
-        document.getElementById('file-name').classList.add('hidden');
-        document.getElementById('upload-area').classList.remove('has-file');
+        comprovantes = [];
+        renderComprovantes();
       } else {
         showToast('Erro: ' + (data.detail || 'Tente novamente'), 'error');
       }
