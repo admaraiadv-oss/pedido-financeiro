@@ -56,7 +56,7 @@ def save_token_to_render(token_json: str):
         }
         # Get current env vars
         url = f"https://api.render.com/v1/services/{service_id}/env-vars"
-        r = httpx.get(url, headers=headers, timeout=15)
+        r = httpx.get(url, headers=headers, timeout=10)
         logger.info(f"Render GET env-vars: {r.status_code}")
         if r.status_code != 200:
             logger.error(f"Erro ao buscar env vars: {r.text[:300]}")
@@ -75,7 +75,7 @@ def save_token_to_render(token_json: str):
                 updated.append({"key": key, "value": val})
         if not found:
             updated.append({"key": "GOOGLE_TOKEN_JSON", "value": token_json})
-        r2 = httpx.put(url, headers=headers, json=updated, timeout=15)
+        r2 = httpx.put(url, headers=headers, json=updated, timeout=10)
         logger.info(f"Render PUT env-vars: {r2.status_code} - {r2.text[:200]}")
         if r2.status_code in (200, 201):
             logger.info("Token salvo no Render com sucesso.")
@@ -97,10 +97,16 @@ def get_credentials() -> Credentials:
         save_token_to_render(new_token)
     return creds
 
+_cached_creds = None
+
 def get_services():
+    global _cached_creds
     creds = get_credentials()
-    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-    sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    # Reuse cached credentials if still valid
+    if _cached_creds is None or creds.token != _cached_creds.token:
+        _cached_creds = creds
+    drive = build("drive", "v3", credentials=_cached_creds, cache_discovery=False)
+    sheets = build("sheets", "v4", credentials=_cached_creds, cache_discovery=False)
     return drive, sheets
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
