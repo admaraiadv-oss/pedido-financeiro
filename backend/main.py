@@ -99,8 +99,8 @@ def get_credentials() -> Credentials:
 
 def get_services():
     creds = get_credentials()
-    drive = build("drive", "v3", credentials=creds)
-    sheets = build("sheets", "v4", credentials=creds)
+    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+    sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
     return drive, sheets
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
