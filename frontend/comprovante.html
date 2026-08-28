@@ -239,7 +239,10 @@
     });
 
     try {
-      var res = await fetch('/anexar-comprovante', {method: 'POST', body: fd});
+      var controller = new AbortController();
+    var timeout = setTimeout(function() { controller.abort(); }, 120000); // 2 min timeout
+    var res = await fetch('/anexar-comprovante', {method: 'POST', body: fd, signal: controller.signal});
+    clearTimeout(timeout);
       var data = await res.json();
 
       if (res.ok && data.ok) {
@@ -271,7 +274,10 @@
     fd.append('file_name', file_name);
 
     try {
-      var res = await fetch('/finalizar-sem-comprovante', {method: 'POST', body: fd});
+      var controller2 = new AbortController();
+    var timeout2 = setTimeout(function() { controller2.abort(); }, 120000);
+    var res = await fetch('/finalizar-sem-comprovante', {method: 'POST', body: fd, signal: controller2.signal});
+    clearTimeout(timeout2);
       var data = await res.json();
 
       if (res.ok && data.ok) {
@@ -379,7 +385,10 @@
     fd.append('file_name', file_name);
 
     try {
-      var res = await fetch('/finalizar-sem-comprovante', {method: 'POST', body: fd});
+      var controller2 = new AbortController();
+    var timeout2 = setTimeout(function() { controller2.abort(); }, 120000);
+    var res = await fetch('/finalizar-sem-comprovante', {method: 'POST', body: fd, signal: controller2.signal});
+    clearTimeout(timeout2);
       var data = await res.json();
 
       if (res.ok && data.ok) {
