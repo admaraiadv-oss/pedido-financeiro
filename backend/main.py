@@ -8,7 +8,7 @@ from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse
+from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse, Response
 from typing import List, Optional
 import fitz
 from PIL import Image
@@ -362,7 +362,7 @@ async def get_pendentes():
 async def anexar_comprovante(
     file_id: str = Form(...),
     file_name: str = Form(...),
-    comprovante: UploadFile = File(...),
+    comprovante: List[UploadFile] = File(...),
 ):
     try:
         drive, sheets = get_services()
@@ -372,25 +372,35 @@ async def anexar_comprovante(
         raise HTTPException(500, f"Erro de autenticação Google: {e}")
 
     folder_comprovantes = os.environ["DRIVE_FOLDER_COMPROVANTES"]
+    MAX_FILE_SIZE = 20 * 1024 * 1024
 
     try:
         next_num = get_next_anexo_number(sheets)
         original_pdf = download_from_drive(drive, file_id)
-        comp_content = await comprovante.read()
-        comp_pdf = to_pdf_bytes(comp_content, comprovante.filename)
-        merged = merge_pdfs([original_pdf, comp_pdf])
+
+        comp_pdfs = []
+        for c in comprovante:
+            if c and c.filename:
+                file_bytes = await c.read()
+                if len(file_bytes) > MAX_FILE_SIZE:
+                    raise HTTPException(400, f"Arquivo '{c.filename}' excede o limite de 20MB.")
+                comp_pdfs.append(to_pdf_bytes(file_bytes, c.filename))
+
+        all_pdfs = [original_pdf] + comp_pdfs
+        merged = merge_pdfs(all_pdfs) if len(all_pdfs) > 1 else all_pdfs[0]
+
         base_name = file_name.replace("PENDENTE ", "")
         final_name = f"{next_num} {base_name}"
         new_file_id, _ = upload_to_drive(drive, merged, final_name, folder_comprovantes)
         delete_from_drive(drive, file_id)
         update_anexo_in_sheets(sheets, file_id, next_num)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erro ao anexar comprovante: {e}")
         raise HTTPException(500, f"Erro: {e}")
 
     return {"ok": True, "numero": next_num, "filename": final_name, "drive_id": new_file_id}
-
-
 
 @app.get("/buscar-relatorio")
 async def buscar_relatorio(cliente: str, data_inicio: str, data_fim: str):
@@ -410,12 +420,11 @@ async def buscar_relatorio(cliente: str, data_inicio: str, data_fim: str):
     ).execute()
     values = result.get("values", [])
 
-    from datetime import datetime as dt
     def parse_date(s):
         for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
             try:
-                return dt.strptime(s, fmt)
-            except:
+                return datetime.strptime(s, fmt)
+            except Exception:
                 pass
         return None
 
@@ -476,13 +485,11 @@ async def gerar_zip(
     ).execute()
     values = result.get("values", [])
 
-    # Parse date range
-    from datetime import datetime as dt
     def parse_date(s):
         for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
             try:
-                return dt.strptime(s, fmt)
-            except:
+                return datetime.strptime(s, fmt)
+            except Exception:
                 pass
         return None
 
@@ -546,15 +553,12 @@ async def gerar_zip(
     if not zip_bytes:
         raise HTTPException(404, "Nenhum arquivo de comprovante encontrado para o período.")
 
-    from fastapi.responses import Response
     filename = f"Comprovantes_{cliente.replace(' ','_')}_{data_inicio}_{data_fim}.zip"
     return Response(
         content=zip_bytes,
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
-
-
 
 @app.post("/finalizar-sem-comprovante")
 async def finalizar_sem_comprovante(
@@ -612,7 +616,6 @@ async def baixar_comprovante(file_id: str):
     except Exception as e:
         raise HTTPException(500, f"Erro ao baixar arquivo: {e}")
 
-    from fastapi.responses import Response
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
