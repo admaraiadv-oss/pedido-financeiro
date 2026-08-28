@@ -41,6 +41,16 @@ def get_oauth_config():
         }
     }
 
+
+def parse_date(s: str):
+    """Parse date string in dd/mm/yyyy or yyyy-mm-dd format."""
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+    return None
+
 def save_token_to_render(token_json: str):
     """Persist refreshed token back to Render environment variable."""
     try:
@@ -253,17 +263,13 @@ def update_anexo_in_sheets(sheets, file_drive_id: str, numero: int):
     for i, row in enumerate(values):
         if len(row) > 9 and row[9] == file_drive_id:
             row_num = i + 1
-            sheets.spreadsheets().values().update(
+            # Batch update E (anexo number) and J (temp drive id) in one call
+            sheets.spreadsheets().values().batchUpdate(
                 spreadsheetId=spreadsheet_id,
-                range=f"{sheet_name}!E{row_num}",
-                valueInputOption="USER_ENTERED",
-                body={"values": [[str(numero)]]}
-            ).execute()
-            sheets.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=f"{sheet_name}!J{row_num}",
-                valueInputOption="USER_ENTERED",
-                body={"values": [[""]]}
+                body={"valueInputOption": "USER_ENTERED", "data": [
+                    {"range": f"{sheet_name}!E{row_num}", "values": [[str(numero)]]},
+                    {"range": f"{sheet_name}!J{row_num}", "values": [[""]]},
+                ]}
             ).execute()
             return True
     return False
@@ -314,8 +320,8 @@ async def submit(
     if has_file:
         pdfs = []
         for f in valid_files:
-            content = await f.read()
-            pdfs.append(to_pdf_bytes(content, f.filename))
+            file_bytes = await f.read()
+            pdfs.append(to_pdf_bytes(file_bytes, f.filename))
         merged = merge_pdfs(pdfs) if len(pdfs) > 1 else pdfs[0]
         filename = f"PENDENTE {safe(descricao_completa)} - {safe(cliente)} - {safe(advogado)}.pdf"
         try:
@@ -420,14 +426,6 @@ async def buscar_relatorio(cliente: str, data_inicio: str, data_fim: str):
     ).execute()
     values = result.get("values", [])
 
-    def parse_date(s):
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-            try:
-                return datetime.strptime(s, fmt)
-            except Exception:
-                pass
-        return None
-
     d_inicio = parse_date(data_inicio)
     d_fim = parse_date(data_fim)
     if not d_inicio or not d_fim:
@@ -485,14 +483,6 @@ async def gerar_zip(
     ).execute()
     values = result.get("values", [])
 
-    def parse_date(s):
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-            try:
-                return datetime.strptime(s, fmt)
-            except Exception:
-                pass
-        return None
-
     d_inicio = parse_date(data_inicio)
     d_fim = parse_date(data_fim)
 
@@ -519,19 +509,29 @@ async def gerar_zip(
     # Build ZIP with available PDFs
     folder_id = os.environ["DRIVE_FOLDER_COMPROVANTES"]
 
-    # List all files in comprovantes folder
+    # Get anexo numbers needed for this client/period
+    needed_numbers = set()
+    for row in matching:
+        anexo = row[4] if len(row) > 4 else "x"
+        if anexo and anexo not in ("x", "pendente", ""):
+            try:
+                needed_numbers.add(str(int(float(anexo))))
+            except (ValueError, TypeError):
+                pass
+
+    # List files in comprovantes folder
     all_files = drive.files().list(
         q=f"'{folder_id}' in parents and trashed=false",
         fields="files(id, name)",
         pageSize=500
     ).execute().get("files", [])
 
-    # Map filename prefix (number) to file
+    # Map filename prefix (number) to file, only for needed numbers
     file_map = {}
     for f in all_files:
         name = f["name"]
         parts = name.split(" ", 1)
-        if parts[0].isdigit():
+        if parts[0].isdigit() and parts[0] in needed_numbers:
             file_map[parts[0]] = f
 
     zip_buf = io.BytesIO()
