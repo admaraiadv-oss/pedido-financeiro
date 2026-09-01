@@ -4,6 +4,7 @@ import json
 import logging
 import httpx
 import zipfile
+import threading
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,10 +26,15 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/static", StaticFiles(directory="../frontend"), name="static")
 
+_cached_creds = None
+_anexo_lock = threading.Lock()
+
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
 ]
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
 
 def get_oauth_config():
     return {
@@ -41,18 +47,7 @@ def get_oauth_config():
         }
     }
 
-
-def parse_date(s: str):
-    """Parse date string in dd/mm/yyyy or yyyy-mm-dd format."""
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(s, fmt)
-        except ValueError:
-            pass
-    return None
-
 def save_token_to_render(token_json: str):
-    """Persist refreshed token back to Render environment variable."""
     try:
         render_api_key = os.environ.get("RENDER_API_KEY")
         service_id = os.environ.get("RENDER_SERVICE_ID")
@@ -64,7 +59,6 @@ def save_token_to_render(token_json: str):
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
-        # Get current env vars
         url = f"https://api.render.com/v1/services/{service_id}/env-vars"
         r = httpx.get(url, headers=headers, timeout=10)
         logger.info(f"Render GET env-vars: {r.status_code}")
@@ -72,7 +66,6 @@ def save_token_to_render(token_json: str):
             logger.error(f"Erro ao buscar env vars: {r.text[:300]}")
             return
         env_vars = r.json()
-        # Build updated list
         updated = []
         found = False
         for ev in env_vars:
@@ -86,7 +79,7 @@ def save_token_to_render(token_json: str):
         if not found:
             updated.append({"key": "GOOGLE_TOKEN_JSON", "value": token_json})
         r2 = httpx.put(url, headers=headers, json=updated, timeout=10)
-        logger.info(f"Render PUT env-vars: {r2.status_code} - {r2.text[:200]}")
+        logger.info(f"Render PUT env-vars: {r2.status_code}")
         if r2.status_code in (200, 201):
             logger.info("Token salvo no Render com sucesso.")
         else:
@@ -95,6 +88,7 @@ def save_token_to_render(token_json: str):
         logger.error(f"Erro ao persistir token: {e}")
 
 def get_credentials() -> Credentials:
+    global _cached_creds
     token_data = os.environ.get("GOOGLE_TOKEN_JSON")
     if not token_data:
         raise HTTPException(401, "Sistema não autorizado. Acesse /auth para autorizar.")
@@ -104,20 +98,152 @@ def get_credentials() -> Credentials:
         creds.refresh(GoogleRequest())
         new_token = creds.to_json()
         os.environ["GOOGLE_TOKEN_JSON"] = new_token
+        _cached_creds = creds
         save_token_to_render(new_token)
     return creds
-
-_cached_creds = None
 
 def get_services():
     global _cached_creds
     creds = get_credentials()
-    # Reuse cached credentials if still valid
     if _cached_creds is None or creds.token != _cached_creds.token:
         _cached_creds = creds
     drive = build("drive", "v3", credentials=_cached_creds, cache_discovery=False)
     sheets = build("sheets", "v4", credentials=_cached_creds, cache_discovery=False)
     return drive, sheets
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def parse_date(s: str):
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+    return None
+
+def image_bytes_to_pdf_bytes(image_bytes: bytes) -> bytes:
+    img = Image.open(io.BytesIO(image_bytes))
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="PDF")
+    return buf.getvalue()
+
+def to_pdf_bytes(content: bytes, filename: str) -> bytes:
+    ext = filename.rsplit(".", 1)[-1].lower()
+    return content if ext == "pdf" else image_bytes_to_pdf_bytes(content)
+
+def merge_pdfs(pdf_list: list) -> bytes:
+    merged = fitz.open()
+    for pb in pdf_list:
+        src = fitz.open(stream=pb, filetype="pdf")
+        merged.insert_pdf(src)
+        src.close()
+    buf = io.BytesIO()
+    merged.save(buf)
+    merged.close()
+    return buf.getvalue()
+
+def upload_to_drive(drive, content: bytes, filename: str, folder_id: str):
+    media = MediaIoBaseUpload(io.BytesIO(content), mimetype="application/pdf", resumable=False)
+    file_meta = {"name": filename, "parents": [folder_id]}
+    f = drive.files().create(body=file_meta, media_body=media, fields="id,webViewLink").execute()
+    return f.get("id", ""), f.get("webViewLink", "")
+
+def download_from_drive(drive, file_id: str) -> bytes:
+    request = drive.files().get_media(fileId=file_id)
+    buf = io.BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return buf.getvalue()
+
+def delete_from_drive(drive, file_id: str):
+    drive.files().delete(fileId=file_id).execute()
+
+def list_pending(drive) -> list:
+    folder_id = os.environ["DRIVE_FOLDER_PENDENTES"]
+    results = drive.files().list(
+        q=f"'{folder_id}' in parents and trashed=false",
+        fields="files(id, name, webViewLink)",
+        orderBy="name"
+    ).execute()
+    return results.get("files", [])
+
+def get_next_anexo_number(sheets) -> int:
+    """Get next anexo number. Must be called inside _anexo_lock."""
+    spreadsheet_id = os.environ["SHEETS_ID"]
+    sheet_name = os.environ.get("SHEET_NAME", "1")
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!E:E"
+    ).execute()
+    values = result.get("values", [])
+    max_num = 0
+    for row in values[1:]:
+        if row:
+            try:
+                n = int(str(row[0]).strip())
+                if n > max_num:
+                    max_num = n
+            except (ValueError, TypeError):
+                pass
+    return max_num + 1
+
+def get_valor_by_drive_id(sheets, drive_ids: list) -> dict:
+    if not drive_ids:
+        return {}
+    spreadsheet_id = os.environ["SHEETS_ID"]
+    sheet_name = os.environ.get("SHEET_NAME", "1")
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!A:J"
+    ).execute()
+    values = result.get("values", [])
+    mapping = {}
+    for row in values[1:]:
+        if len(row) > 9 and row[9] in drive_ids:
+            valor = row[3] if len(row) > 3 else ""
+            mapping[row[9]] = valor
+    return mapping
+
+def append_row_sheets(sheets, row_data: list):
+    spreadsheet_id = os.environ["SHEETS_ID"]
+    sheet_name = os.environ.get("SHEET_NAME", "1")
+    sheets.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!A1",
+        valueInputOption="USER_ENTERED",
+        insertDataOption="INSERT_ROWS",
+        body={"values": [row_data]}
+    ).execute()
+
+def update_anexo_in_sheets(sheets, file_drive_id: str, numero: int):
+    spreadsheet_id = os.environ["SHEETS_ID"]
+    sheet_name = os.environ.get("SHEET_NAME", "1")
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!A:J"
+    ).execute()
+    values = result.get("values", [])
+    for i, row in enumerate(values):
+        if len(row) > 9 and row[9] == file_drive_id:
+            row_num = i + 1
+            sheets.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"{sheet_name}!E{row_num}",
+                valueInputOption="USER_ENTERED",
+                body={"values": [[str(numero)]]}
+            ).execute()
+            sheets.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"{sheet_name}!J{row_num}",
+                valueInputOption="USER_ENTERED",
+                body={"values": [[""]]}
+            ).execute()
+            return True
+    return False
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
 
@@ -148,133 +274,7 @@ async def oauth_callback(request: Request):
     </body></html>
     """)
 
-# ── PDF utils ────────────────────────────────────────────────────────────────
-
-def image_bytes_to_pdf_bytes(image_bytes: bytes) -> bytes:
-    img = Image.open(io.BytesIO(image_bytes))
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-    buf = io.BytesIO()
-    img.save(buf, format="PDF")
-    return buf.getvalue()
-
-def to_pdf_bytes(content: bytes, filename: str) -> bytes:
-    ext = filename.rsplit(".", 1)[-1].lower()
-    return content if ext == "pdf" else image_bytes_to_pdf_bytes(content)
-
-def merge_pdfs(pdf_list: list) -> bytes:
-    merged = fitz.open()
-    for pb in pdf_list:
-        src = fitz.open(stream=pb, filetype="pdf")
-        merged.insert_pdf(src)
-        src.close()
-    buf = io.BytesIO()
-    merged.save(buf)
-    merged.close()
-    return buf.getvalue()
-
-# ── Drive helpers ────────────────────────────────────────────────────────────
-
-def upload_to_drive(drive, content: bytes, filename: str, folder_id: str):
-    media = MediaIoBaseUpload(io.BytesIO(content), mimetype="application/pdf", resumable=False)
-    file_meta = {"name": filename, "parents": [folder_id]}
-    f = drive.files().create(body=file_meta, media_body=media, fields="id,webViewLink").execute()
-    return f.get("id", ""), f.get("webViewLink", "")
-
-def download_from_drive(drive, file_id: str) -> bytes:
-    request = drive.files().get_media(fileId=file_id)
-    buf = io.BytesIO()
-    downloader = MediaIoBaseDownload(buf, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    return buf.getvalue()
-
-def delete_from_drive(drive, file_id: str):
-    drive.files().delete(fileId=file_id).execute()
-
-def list_pending(drive) -> list:
-    folder_id = os.environ["DRIVE_FOLDER_PENDENTES"]
-    results = drive.files().list(
-        q=f"'{folder_id}' in parents and trashed=false",
-        fields="files(id, name, webViewLink)",
-        orderBy="name"
-    ).execute()
-    return results.get("files", [])
-
-def get_valor_by_drive_id(sheets, drive_ids: list) -> dict:
-    """Return dict of {drive_id: valor} by looking up column J in Sheets."""
-    if not drive_ids:
-        return {}
-    spreadsheet_id = os.environ["SHEETS_ID"]
-    sheet_name = os.environ.get("SHEET_NAME", "1")
-    result = sheets.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"{sheet_name}!A:J"
-    ).execute()
-    values = result.get("values", [])
-    mapping = {}
-    for row in values[1:]:
-        if len(row) > 9 and row[9] in drive_ids:
-            valor = row[3] if len(row) > 3 else ""
-            mapping[row[9]] = valor
-    return mapping
-
-# ── Sheets helpers ───────────────────────────────────────────────────────────
-
-def get_next_anexo_number(sheets) -> int:
-    spreadsheet_id = os.environ["SHEETS_ID"]
-    sheet_name = os.environ.get("SHEET_NAME", "1")
-    result = sheets.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"{sheet_name}!E:E"
-    ).execute()
-    values = result.get("values", [])
-    max_num = 0
-    for row in values[1:]:
-        if row:
-            try:
-                n = int(str(row[0]).strip())
-                if n > max_num:
-                    max_num = n
-            except (ValueError, TypeError):
-                pass
-    return max_num + 1
-
-def append_row_sheets(sheets, row_data: list):
-    spreadsheet_id = os.environ["SHEETS_ID"]
-    sheet_name = os.environ.get("SHEET_NAME", "1")
-    sheets.spreadsheets().values().append(
-        spreadsheetId=spreadsheet_id,
-        range=f"{sheet_name}!A1",
-        valueInputOption="USER_ENTERED",
-        insertDataOption="INSERT_ROWS",
-        body={"values": [row_data]}
-    ).execute()
-
-def update_anexo_in_sheets(sheets, file_drive_id: str, numero: int):
-    spreadsheet_id = os.environ["SHEETS_ID"]
-    sheet_name = os.environ.get("SHEET_NAME", "1")
-    result = sheets.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"{sheet_name}!A:J"
-    ).execute()
-    values = result.get("values", [])
-    for i, row in enumerate(values):
-        if len(row) > 9 and row[9] == file_drive_id:
-            row_num = i + 1
-            # Batch update E (anexo number) and J (temp drive id) in one call
-            sheets.spreadsheets().values().batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body={"valueInputOption": "USER_ENTERED", "data": [
-                    {"range": f"{sheet_name}!E{row_num}", "values": [[str(numero)]]},
-                    {"range": f"{sheet_name}!J{row_num}", "values": [[""]]},
-                ]}
-            ).execute()
-            return True
-    return False
-
-# ── Main endpoints ────────────────────────────────────────────────────────────
+# ── Pages ─────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def root():
@@ -283,6 +283,12 @@ def root():
 @app.get("/comprovante")
 def comprovante_page():
     return FileResponse("../frontend/comprovante.html")
+
+@app.get("/relatorio")
+def relatorio_page():
+    return FileResponse("../frontend/relatorio.html")
+
+# ── Submit ────────────────────────────────────────────────────────────────────
 
 @app.post("/submit")
 async def submit(
@@ -317,10 +323,14 @@ async def submit(
     has_file = bool(valid_files)
     file_drive_id = ""
 
+    MAX_FILE_SIZE = 20 * 1024 * 1024
+
     if has_file:
         pdfs = []
         for f in valid_files:
             file_bytes = await f.read()
+            if len(file_bytes) > MAX_FILE_SIZE:
+                raise HTTPException(400, f"Arquivo '{f.filename}' excede o limite de 20MB.")
             pdfs.append(to_pdf_bytes(file_bytes, f.filename))
         merged = merge_pdfs(pdfs) if len(pdfs) > 1 else pdfs[0]
         filename = f"PENDENTE {safe(descricao_completa)} - {safe(cliente)} - {safe(advogado)}.pdf"
@@ -343,6 +353,8 @@ async def submit(
 
     return {"ok": True, "message": "Pedido registrado com sucesso!"}
 
+# ── Pendentes ─────────────────────────────────────────────────────────────────
+
 @app.get("/pendentes")
 async def get_pendentes():
     try:
@@ -353,16 +365,13 @@ async def get_pendentes():
             valor_map = get_valor_by_drive_id(sheets, drive_ids)
             for f in files:
                 f["valor"] = valor_map.get(f["id"], "")
-                # Convert webViewLink to embeddable preview link
-                wvl = f.get("webViewLink", "")
-                if wvl:
-                    file_id = f["id"]
-                    f["previewLink"] = f"https://drive.google.com/file/d/{file_id}/preview"
-                else:
-                    f["previewLink"] = ""
+                file_id = f["id"]
+                f["previewLink"] = f"https://drive.google.com/file/d/{file_id}/preview"
         return {"files": files}
     except Exception as e:
         raise HTTPException(500, f"Erro ao listar pendentes: {e}")
+
+# ── Anexar comprovante ────────────────────────────────────────────────────────
 
 @app.post("/anexar-comprovante")
 async def anexar_comprovante(
@@ -380,26 +389,27 @@ async def anexar_comprovante(
     folder_comprovantes = os.environ["DRIVE_FOLDER_COMPROVANTES"]
     MAX_FILE_SIZE = 20 * 1024 * 1024
 
+    # Read files before acquiring lock
+    comp_pdfs = []
+    for c in comprovante:
+        if c and c.filename:
+            file_bytes = await c.read()
+            if len(file_bytes) > MAX_FILE_SIZE:
+                raise HTTPException(400, f"Arquivo '{c.filename}' excede o limite de 20MB.")
+            comp_pdfs.append(to_pdf_bytes(file_bytes, c.filename))
+
+    original_pdf = download_from_drive(drive, file_id)
+    all_pdfs = [original_pdf] + comp_pdfs
+    merged = merge_pdfs(all_pdfs) if len(all_pdfs) > 1 else all_pdfs[0]
+
     try:
-        next_num = get_next_anexo_number(sheets)
-        original_pdf = download_from_drive(drive, file_id)
-
-        comp_pdfs = []
-        for c in comprovante:
-            if c and c.filename:
-                file_bytes = await c.read()
-                if len(file_bytes) > MAX_FILE_SIZE:
-                    raise HTTPException(400, f"Arquivo '{c.filename}' excede o limite de 20MB.")
-                comp_pdfs.append(to_pdf_bytes(file_bytes, c.filename))
-
-        all_pdfs = [original_pdf] + comp_pdfs
-        merged = merge_pdfs(all_pdfs) if len(all_pdfs) > 1 else all_pdfs[0]
-
-        base_name = file_name.replace("PENDENTE ", "")
-        final_name = f"{next_num} {base_name}"
-        new_file_id, _ = upload_to_drive(drive, merged, final_name, folder_comprovantes)
-        delete_from_drive(drive, file_id)
-        update_anexo_in_sheets(sheets, file_id, next_num)
+        with _anexo_lock:
+            next_num = get_next_anexo_number(sheets)
+            base_name = file_name.replace("PENDENTE ", "")
+            final_name = f"{next_num} {base_name}"
+            new_file_id, _ = upload_to_drive(drive, merged, final_name, folder_comprovantes)
+            delete_from_drive(drive, file_id)
+            update_anexo_in_sheets(sheets, file_id, next_num)
     except HTTPException:
         raise
     except Exception as e:
@@ -407,6 +417,63 @@ async def anexar_comprovante(
         raise HTTPException(500, f"Erro: {e}")
 
     return {"ok": True, "numero": next_num, "filename": final_name, "drive_id": new_file_id}
+
+# ── Finalizar sem comprovante ─────────────────────────────────────────────────
+
+@app.post("/finalizar-sem-comprovante")
+async def finalizar_sem_comprovante(
+    file_id: str = Form(...),
+    file_name: str = Form(...),
+):
+    try:
+        drive, sheets = get_services()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Erro de autenticação: {e}")
+
+    folder_comprovantes = os.environ["DRIVE_FOLDER_COMPROVANTES"]
+    original_pdf = download_from_drive(drive, file_id)
+
+    try:
+        with _anexo_lock:
+            next_num = get_next_anexo_number(sheets)
+            base_name = file_name.replace("PENDENTE ", "")
+            final_name = f"{next_num} {base_name}"
+            new_file_id, _ = upload_to_drive(drive, original_pdf, final_name, folder_comprovantes)
+            delete_from_drive(drive, file_id)
+            update_anexo_in_sheets(sheets, file_id, next_num)
+    except Exception as e:
+        logger.error(f"Erro ao finalizar sem comprovante: {e}")
+        raise HTTPException(500, f"Erro: {e}")
+
+    return {"ok": True, "numero": next_num, "filename": final_name, "drive_id": new_file_id}
+
+# ── Download ──────────────────────────────────────────────────────────────────
+
+@app.get("/baixar-comprovante/{file_id}")
+async def baixar_comprovante(file_id: str):
+    try:
+        drive, _ = get_services()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Erro de autenticação: {e}")
+
+    try:
+        pdf_bytes = download_from_drive(drive, file_id)
+        meta = drive.files().get(fileId=file_id, fields="name").execute()
+        filename = meta.get("name", "comprovante.pdf")
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao baixar arquivo: {e}")
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+# ── Relatório ─────────────────────────────────────────────────────────────────
 
 @app.get("/buscar-relatorio")
 async def buscar_relatorio(cliente: str, data_inicio: str, data_fim: str):
@@ -419,7 +486,6 @@ async def buscar_relatorio(cliente: str, data_inicio: str, data_fim: str):
 
     spreadsheet_id = os.environ["SHEETS_ID"]
     sheet_name = os.environ.get("SHEET_NAME", "1")
-
     result = sheets.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"{sheet_name}!A:J"
@@ -456,10 +522,6 @@ async def buscar_relatorio(cliente: str, data_inicio: str, data_fim: str):
 
     return {"rows": rows}
 
-@app.get("/relatorio")
-def relatorio_page():
-    return FileResponse("../frontend/relatorio.html")
-
 @app.post("/gerar-zip")
 async def gerar_zip(
     cliente: str = Form(...),
@@ -475,8 +537,6 @@ async def gerar_zip(
 
     spreadsheet_id = os.environ["SHEETS_ID"]
     sheet_name = os.environ.get("SHEET_NAME", "1")
-
-    # Fetch all rows
     result = sheets.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"{sheet_name}!A:J"
@@ -485,11 +545,9 @@ async def gerar_zip(
 
     d_inicio = parse_date(data_inicio)
     d_fim = parse_date(data_fim)
-
     if not d_inicio or not d_fim:
         raise HTTPException(400, "Datas inválidas.")
 
-    # Filter rows by cliente and date range
     matching = []
     for row in values[1:]:
         if len(row) < 5:
@@ -506,10 +564,9 @@ async def gerar_zip(
     if not matching:
         raise HTTPException(404, "Nenhum registro encontrado para esse cliente e período.")
 
-    # Build ZIP with available PDFs
-    folder_id = os.environ["DRIVE_FOLDER_COMPROVANTES"]
+    folder_id = os.environ.get("DRIVE_FOLDER_COMPROVANTES")
 
-    # Get anexo numbers needed for this client/period
+    # Get only needed anexo numbers
     needed_numbers = set()
     for row in matching:
         anexo = row[4] if len(row) > 4 else "x"
@@ -519,14 +576,12 @@ async def gerar_zip(
             except (ValueError, TypeError):
                 pass
 
-    # List files in comprovantes folder
     all_files = drive.files().list(
         q=f"'{folder_id}' in parents and trashed=false",
         fields="files(id, name)",
         pageSize=500
     ).execute().get("files", [])
 
-    # Map filename prefix (number) to file, only for needed numbers
     file_map = {}
     for f in all_files:
         name = f["name"]
@@ -539,7 +594,11 @@ async def gerar_zip(
         for row in matching:
             anexo = row[4] if len(row) > 4 else "x"
             if anexo and anexo not in ("x", "pendente", ""):
-                f = file_map.get(str(int(float(anexo))))
+                try:
+                    key = str(int(float(anexo)))
+                except (ValueError, TypeError):
+                    continue
+                f = file_map.get(key)
                 if f:
                     try:
                         pdf_bytes = download_from_drive(drive, f["id"])
@@ -560,67 +619,7 @@ async def gerar_zip(
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
-@app.post("/finalizar-sem-comprovante")
-async def finalizar_sem_comprovante(
-    file_id: str = Form(...),
-    file_name: str = Form(...),
-):
-    try:
-        drive, sheets = get_services()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Erro de autenticação: {e}")
-
-    folder_comprovantes = os.environ["DRIVE_FOLDER_COMPROVANTES"]
-
-    try:
-        next_num = get_next_anexo_number(sheets)
-
-        # Download original file from Pendentes
-        original_pdf = download_from_drive(drive, file_id)
-
-        # Build final filename
-        base_name = file_name.replace("PENDENTE ", "")
-        final_name = f"{next_num} {base_name}"
-
-        # Upload to Comprovantes (no merge, just move)
-        new_file_id, _ = upload_to_drive(drive, original_pdf, final_name, folder_comprovantes)
-
-        # Delete from Pendentes
-        delete_from_drive(drive, file_id)
-
-        # Update Sheets
-        update_anexo_in_sheets(sheets, file_id, next_num)
-
-    except Exception as e:
-        logger.error(f"Erro ao finalizar sem comprovante: {e}")
-        raise HTTPException(500, f"Erro: {e}")
-
-    return {"ok": True, "numero": next_num, "filename": final_name, "drive_id": new_file_id}
-
-@app.get("/baixar-comprovante/{file_id}")
-async def baixar_comprovante(file_id: str):
-    try:
-        drive, _ = get_services()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Erro de autenticação: {e}")
-
-    try:
-        pdf_bytes = download_from_drive(drive, file_id)
-        # Get filename
-        meta = drive.files().get(fileId=file_id, fields="name").execute()
-        filename = meta.get("name", "comprovante.pdf")
-    except Exception as e:
-        raise HTTPException(500, f"Erro ao baixar arquivo: {e}")
-
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+# ── Health ────────────────────────────────────────────────────────────────────
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
