@@ -46,18 +46,18 @@
   .tabela tr:hover td{background:var(--navy-pale);}
   .badge-sim{display:inline-block;padding:2px 8px;background:#e6f4ee;color:var(--green);border-radius:2px;font-size:11px;font-weight:600;}
   .badge-nao{display:inline-block;padding:2px 8px;background:#fef0f0;color:var(--red);border-radius:2px;font-size:11px;}
-  .badge-manual{display:inline-block;padding:2px 8px;background:#fff8e6;color:#a07800;border-radius:2px;font-size:11px;}
   .total-row td{font-weight:600;color:var(--navy);border-top:2px solid var(--border);border-bottom:none;}
   .btn-remove-row{background:none;border:none;cursor:pointer;color:#ccc;font-size:16px;padding:0 4px;transition:color 0.15s;}
   .btn-remove-row:hover{color:var(--red);}
   .add-linha-box{margin-top:12px;border:1px dashed var(--border);border-radius:2px;padding:16px;background:var(--bg);}
-  .add-linha-box .row3{display:grid;grid-template-columns:1fr 2fr 1fr auto;gap:10px;align-items:end;}
+  .add-linha-grid{display:grid;grid-template-columns:1fr 2fr 1fr 1fr auto;gap:10px;align-items:end;}
   .add-linha-box input{padding:8px 10px;font-size:13px;}
   .btn-add-linha{padding:8px 16px;background:var(--navy);color:white;border:none;border-radius:2px;font-family:'Inter',sans-serif;font-size:12px;font-weight:500;cursor:pointer;white-space:nowrap;letter-spacing:0.06em;}
   .btn-add-linha:hover{background:var(--navy-light);}
+  .anexo-input{width:70px;padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:2px;font-family:'Inter',sans-serif;color:var(--ink);background:white;text-align:center;}
   .form-footer{margin-top:24px;padding-top:20px;border-top:1px solid var(--border);text-align:center;}
   .form-footer p{font-size:11px;color:var(--ink2);opacity:0.6;letter-spacing:0.04em;}
-  @media(max-width:560px){.card{padding:28px 20px;}.row2{grid-template-columns:1fr;}.resumo-box{flex-direction:column;}.btn-download{width:100%;}.add-linha-box .row3{grid-template-columns:1fr 1fr;}}
+  @media(max-width:560px){.card{padding:28px 20px;}.row2{grid-template-columns:1fr;}.resumo-box{flex-direction:column;}.btn-download{width:100%;}.add-linha-grid{grid-template-columns:1fr 1fr;}}
 </style>
 </head>
 <body>
@@ -97,22 +97,19 @@
         <p id="resumo-texto"></p>
         <strong id="resumo-total"></strong>
       </div>
-      <button class="btn-download" id="btn-zip" onclick="baixarZip()">⬇ Baixar ZIP</button>
+      <button class="btn-download" id="btn-zip" onclick="baixarZip()">&#8595; Baixar ZIP</button>
     </div>
-
     <table class="tabela">
       <thead>
         <tr>
-          <th>Data</th>
-          <th>Descrição</th>
+          <th>Data</th><th>Descrição</th>
           <th style="text-align:right">Valor</th>
-          <th>Anexo</th>
-          <th></th>
+          <th>Anexo</th><th></th>
         </tr>
       </thead>
       <tbody id="tabela-body"></tbody>
       <tfoot>
-        <tr class="total-row" id="total-row">
+        <tr class="total-row">
           <td colspan="2">Total</td>
           <td style="text-align:right" id="total-valor"></td>
           <td colspan="2"></td>
@@ -120,107 +117,71 @@
       </tfoot>
     </table>
 
-    <!-- Add manual line -->
     <div class="add-linha-box" style="margin-top:16px">
       <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink2);margin-bottom:10px;">+ Adicionar linha manual</div>
-      <div class="row3">
-        <div>
-          <label>Data</label>
-          <input type="date" id="manual-data">
-        </div>
-        <div>
-          <label>Descrição</label>
-          <input type="text" id="manual-desc" placeholder="Ex: Honorários Julho 2026">
-        </div>
-        <div>
-          <label>Valor (R$)</label>
-          <input type="text" id="manual-valor" placeholder="0,00" oninput="formatValorInput(this)">
-        </div>
-        <div>
-          <label>&nbsp;</label>
-          <button class="btn-add-linha" onclick="adicionarLinha()">Adicionar</button>
-        </div>
+      <div class="add-linha-grid">
+        <div><label>Data</label><input type="date" id="manual-data"></div>
+        <div><label>Descrição</label><input type="text" id="manual-desc" placeholder="Ex: Honorários Julho 2026"></div>
+        <div><label>Valor (R$)</label><input type="text" id="manual-valor" placeholder="0,00" oninput="formatValorInput(this)"></div>
+        <div><label>N° Anexo</label><input type="text" id="manual-anexo" placeholder="Opcional"></div>
+        <div><label>&nbsp;</label><button class="btn-add-linha" onclick="adicionarLinha()">Adicionar</button></div>
       </div>
     </div>
   </div>
-
   <div class="form-footer"><p>Arai Advogados &nbsp;·&nbsp; Uso interno</p></div>
 </div>
 <div class="toast" id="toast"></div>
-
 <script>
   const hoje = new Date();
-  const primeiro = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
-  const ultimo = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
-  document.getElementById('data-inicio').valueAsDate = primeiro;
-  document.getElementById('data-fim').valueAsDate = ultimo;
-  document.getElementById('manual-data').valueAsDate = hoje;
+  document.getElementById("data-inicio").valueAsDate = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+  document.getElementById("data-fim").valueAsDate = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
+  document.getElementById("manual-data").valueAsDate = hoje;
 
-  document.getElementById('cliente-select').addEventListener('change', function(){
-    document.getElementById('cliente-outro').style.display = this.value === 'outro' ? 'block' : 'none';
+  document.getElementById("cliente-select").addEventListener("change", function(){
+    document.getElementById("cliente-outro").style.display = this.value === "outro" ? "block" : "none";
   });
 
   function getCliente(){
-    const sel = document.getElementById('cliente-select');
-    return sel.value === 'outro' ? document.getElementById('cliente-outro').value.trim() : sel.value;
+    const sel = document.getElementById("cliente-select");
+    return sel.value === "outro" ? document.getElementById("cliente-outro").value.trim() : sel.value;
   }
 
   function showToast(msg, type){
-    const t = document.getElementById('toast');
+    const t = document.getElementById("toast");
     t.textContent = msg;
-    t.className = 'toast ' + (type||'success') + ' show';
-    setTimeout(() => t.classList.remove('show'), 4500);
+    t.className = "toast " + (type||"success") + " show";
+    setTimeout(() => t.classList.remove("show"), 4500);
   }
 
   function formatValor(v){
-    const s = String(v).replace(/[^0-9.,]/g,'');
-    // Handle both "148.87" and "148,87"
-    const n = parseFloat(s.replace(',','.'));
-    return isNaN(n) ? (v||'—') : n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+    const s = String(v).replace(/[^0-9.,]/g,"");
+    const n = parseFloat(s.replace(",","."));
+    return isNaN(n) ? (v||"—") : n.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
   }
 
   function formatValorInput(input){
-    let v = input.value.replace(/\D/g,'');
-    if(!v){input.value='';return;}
-    input.value = (parseInt(v)/100).toFixed(2).replace('.',',');
+    let v = input.value.replace(/\D/g,"");
+    if(!v){input.value="";return;}
+    input.value = (parseInt(v)/100).toFixed(2).replace(".",",");
   }
 
-  let linhas = []; // {data, descricao_completa, valor, anexo, manual}
+  let linhas = [];
   let dadosAtuais = null;
 
   function recalcTotal(){
     let total = 0;
     linhas.forEach(r => {
-      const s = String(r.valor).replace(/[^0-9.,]/g,'');
-      const n = parseFloat(s.replace(',','.'));
+      const n = parseFloat(String(r.valor).replace(",","."));
       if(!isNaN(n)) total += n;
     });
-    document.getElementById('total-valor').textContent = total.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
-    const comAnexo = linhas.filter(r => !r.manual && r.anexo && r.anexo !== 'x' && r.anexo !== 'pendente' && r.anexo !== '').length;
-    document.getElementById('resumo-texto').textContent = linhas.length + ' registro(s) — ' + comAnexo + ' com comprovante';
-    document.getElementById('resumo-total').textContent = total.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+    document.getElementById("total-valor").textContent = total.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+    const comAnexo = linhas.filter(r => !r.manual && r.anexo && r.anexo !== "x" && r.anexo !== "pendente" && r.anexo !== "").length;
+    document.getElementById("resumo-texto").textContent = linhas.length + " registro(s) — " + comAnexo + " com comprovante";
+    document.getElementById("resumo-total").textContent = total.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
   }
 
-  function renderTabela(){
-    const tbody = document.getElementById('tabela-body');
-    tbody.innerHTML = '';
-    linhas.forEach((row, idx) => {
-      const tr = document.createElement('tr');
-      const temAnexo = !row.manual && row.anexo && row.anexo !== 'x' && row.anexo !== 'pendente' && row.anexo !== '';
-      const badge = row.manual
-        ? '<span class="badge-manual">Manual</span>'
-        : temAnexo
-          ? '<span class="badge-sim">✓ ' + row.anexo + '</span>'
-          : '<span class="badge-nao">Sem arquivo</span>';
-      tr.innerHTML =
-        '<td>' + row.data + '</td>' +
-        '<td>' + row.descricao_completa + '</td>' +
-        '<td style="text-align:right;white-space:nowrap">' + formatValor(row.valor) + '</td>' +
-        '<td>' + badge + '</td>' +
-        '<td><button class="btn-remove-row" onclick="removerLinha(' + idx + ')" title="Remover">×</button></td>';
-      tbody.appendChild(tr);
-    });
-    recalcTotal();
+  function atualizarAnexo(idx, val){
+    linhas[idx].anexo = val;
   }
 
   function removerLinha(idx){
@@ -228,88 +189,93 @@
     renderTabela();
   }
 
+  function renderTabela(){
+    const tbody = document.getElementById("tabela-body");
+    tbody.innerHTML = "";
+    linhas.forEach((row, idx) => {
+      const tr = document.createElement("tr");
+      const temAnexo = !row.manual && row.anexo && row.anexo !== "x" && row.anexo !== "pendente" && row.anexo !== "";
+      let anexoCell;
+      if(row.manual){
+        anexoCell = '<input class="anexo-input" type="text" value="' + (row.anexo||"") + '" placeholder="N°" oninput="atualizarAnexo(' + idx + ', this.value)">';
+      } else {
+        anexoCell = temAnexo
+          ? '<span class="badge-sim">&#10003; ' + row.anexo + '</span>'
+          : '<span class="badge-nao">Sem arquivo</span>';
+      }
+      tr.innerHTML =
+        "<td>" + row.data + "</td>" +
+        "<td>" + row.descricao_completa + "</td>" +
+        '<td style="text-align:right;white-space:nowrap">' + formatValor(row.valor) + "</td>" +
+        "<td>" + anexoCell + "</td>" +
+        '<td><button class="btn-remove-row" onclick="removerLinha(' + idx + ')" title="Remover">&#215;</button></td>';
+      tbody.appendChild(tr);
+    });
+    recalcTotal();
+  }
+
   function adicionarLinha(){
-    const data = document.getElementById('manual-data').value;
-    const desc = document.getElementById('manual-desc').value.trim();
-    const valor = document.getElementById('manual-valor').value.trim();
-    if(!desc){ showToast('Informe a descrição.', 'error'); return; }
-    if(!valor){ showToast('Informe o valor.', 'error'); return; }
-
-    // Format date for display
+    const data = document.getElementById("manual-data").value;
+    const desc = document.getElementById("manual-desc").value.trim();
+    const valor = document.getElementById("manual-valor").value.trim();
+    const anexo = document.getElementById("manual-anexo").value.trim();
+    if(!desc){ showToast("Informe a descrição.", "error"); return; }
+    if(!valor){ showToast("Informe o valor.", "error"); return; }
     let dataDisplay = data;
-    if(data){
-      const [y,m,d] = data.split('-');
-      dataDisplay = d+'/'+m+'/'+y;
-    }
-
-    linhas.push({data: dataDisplay, descricao_completa: desc, valor: valor.replace(',','.'), anexo: '', manual: true});
+    if(data){ const [y,m,d] = data.split("-"); dataDisplay = d+"/"+m+"/"+y; }
+    linhas.push({data: dataDisplay, descricao_completa: desc, valor: valor.replace(",","."), anexo: anexo, manual: true});
     renderTabela();
-    document.getElementById('manual-desc').value = '';
-    document.getElementById('manual-valor').value = '';
-    showToast('Linha adicionada!', 'success');
+    document.getElementById("manual-desc").value = "";
+    document.getElementById("manual-valor").value = "";
+    document.getElementById("manual-anexo").value = "";
+    showToast("Linha adicionada!", "success");
   }
 
   async function buscar(){
     const cliente = getCliente();
-    const dataInicio = document.getElementById('data-inicio').value;
-    const dataFim = document.getElementById('data-fim').value;
-    if(!cliente){ showToast('Selecione o cliente.', 'error'); return; }
-    if(!dataInicio || !dataFim){ showToast('Selecione o período.', 'error'); return; }
-
-    const btn = document.getElementById('btn-buscar');
+    const dataInicio = document.getElementById("data-inicio").value;
+    const dataFim = document.getElementById("data-fim").value;
+    if(!cliente){ showToast("Selecione o cliente.", "error"); return; }
+    if(!dataInicio || !dataFim){ showToast("Selecione o período.", "error"); return; }
+    const btn = document.getElementById("btn-buscar");
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span>Buscando...';
-
     try {
-      const res = await fetch('/buscar-relatorio?' + new URLSearchParams({cliente, data_inicio: dataInicio, data_fim: dataFim}));
+      const res = await fetch("/buscar-relatorio?" + new URLSearchParams({cliente, data_inicio: dataInicio, data_fim: dataFim}));
       const data = await res.json();
-      if(!res.ok){ showToast('Erro: ' + (data.detail || 'Tente novamente'), 'error'); return; }
-
+      if(!res.ok){ showToast("Erro: " + (data.detail || "Tente novamente"), "error"); return; }
       dadosAtuais = {cliente, dataInicio, dataFim};
       linhas = data.rows.map(r => ({...r, manual: false}));
       renderTabela();
-      document.getElementById('result-section').style.display = 'block';
-    } catch(e) {
-      showToast('Erro de conexão.', 'error');
-    }
-
+      document.getElementById("result-section").style.display = "block";
+    } catch(e) { showToast("Erro de conexão.", "error"); }
     btn.disabled = false;
-    btn.innerHTML = 'Buscar';
+    btn.innerHTML = "Buscar";
   }
 
   async function baixarZip(){
     if(!dadosAtuais) return;
-    const btn = document.getElementById('btn-zip');
+    const btn = document.getElementById("btn-zip");
     btn.disabled = true;
-    btn.textContent = 'Gerando ZIP...';
-
+    btn.textContent = "Gerando ZIP...";
     try {
       const fd = new FormData();
-      fd.append('cliente', dadosAtuais.cliente);
-      fd.append('data_inicio', dadosAtuais.dataInicio);
-      fd.append('data_fim', dadosAtuais.dataFim);
-
-      const res = await fetch('/gerar-zip', {method:'POST', body:fd});
-      if(!res.ok){
-        const err = await res.json();
-        showToast('Erro: ' + (err.detail || 'Tente novamente'), 'error');
-        return;
-      }
-
+      fd.append("cliente", dadosAtuais.cliente);
+      fd.append("data_inicio", dadosAtuais.dataInicio);
+      fd.append("data_fim", dadosAtuais.dataFim);
+      const res = await fetch("/gerar-zip", {method:"POST", body:fd});
+      if(!res.ok){ const err = await res.json(); showToast("Erro: " + (err.detail || "Tente novamente"), "error"); return; }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       a.href = url;
-      a.download = 'Comprovantes_' + dadosAtuais.cliente.replace(/ /g,'_') + '_' + dadosAtuais.dataInicio + '_' + dadosAtuais.dataFim + '.zip';
+      a.download = "Comprovantes_" + dadosAtuais.cliente.replace(/ /g,"_") + "_" + dadosAtuais.dataInicio + "_" + dadosAtuais.dataFim + ".zip";
       a.click();
       URL.revokeObjectURL(url);
-      showToast('ZIP baixado com sucesso!', 'success');
-    } catch(e) {
-      showToast('Erro ao gerar ZIP.', 'error');
-    }
-
+      showToast("ZIP baixado com sucesso!", "success");
+    } catch(e) { showToast("Erro ao gerar ZIP.", "error"); }
     btn.disabled = false;
-    btn.textContent = '⬇ Baixar ZIP';
+    btn.textContent = "\u2193 Baixar ZIP";
   }
 </script>
 </body>
