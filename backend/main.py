@@ -92,23 +92,35 @@ def get_credentials() -> Credentials:
     token_data = os.environ.get("GOOGLE_TOKEN_JSON")
     if not token_data:
         raise HTTPException(401, "Sistema não autorizado. Acesse /auth para autorizar.")
+
+    # Always load fresh from env to pick up saved tokens after restart
     creds = Credentials.from_authorized_user_info(json.loads(token_data), SCOPES)
-    if creds.expired and creds.refresh_token:
-        logger.info("Token expirado, renovando...")
-        creds.refresh(GoogleRequest())
-        new_token = creds.to_json()
-        os.environ["GOOGLE_TOKEN_JSON"] = new_token
+
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            try:
+                logger.info("Token expirado, renovando...")
+                creds.refresh(GoogleRequest())
+                new_token = creds.to_json()
+                os.environ["GOOGLE_TOKEN_JSON"] = new_token
+                _cached_creds = creds
+                save_token_to_render(new_token)
+                logger.info("Token renovado com sucesso.")
+            except Exception as e:
+                logger.error(f"Falha ao renovar token: {e}")
+                _cached_creds = None
+                raise HTTPException(401, "Token expirado. Acesse /auth para reautorizar.")
+        else:
+            raise HTTPException(401, "Token inválido. Acesse /auth para reautorizar.")
+    else:
         _cached_creds = creds
-        save_token_to_render(new_token)
+
     return creds
 
 def get_services():
-    global _cached_creds
     creds = get_credentials()
-    if _cached_creds is None or creds.token != _cached_creds.token:
-        _cached_creds = creds
-    drive = build("drive", "v3", credentials=_cached_creds, cache_discovery=False)
-    sheets = build("sheets", "v4", credentials=_cached_creds, cache_discovery=False)
+    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+    sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
     return drive, sheets
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
