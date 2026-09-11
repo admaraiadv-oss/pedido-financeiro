@@ -154,8 +154,8 @@
   }
 
   function formatValor(v){
-    const s = String(v).replace(/[^0-9.,]/g,"");
-    const n = parseFloat(s.replace(",","."));
+    const s = String(v).replace(/[^0-9.,]/g,"").replace(",",".");
+    const n = parseFloat(s);
     return isNaN(n) ? (v||"—") : n.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
   }
 
@@ -171,7 +171,8 @@
   function recalcTotal(){
     let total = 0;
     linhas.forEach(r => {
-      const n = parseFloat(String(r.valor).replace(",","."));
+      const s = String(r.valor).replace(/[^0-9,.]/g,"").replace(",",".");
+      const n = parseFloat(s);
       if(!isNaN(n)) total += n;
     });
     document.getElementById("total-valor").textContent = total.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
