@@ -180,10 +180,6 @@
     document.getElementById("resumo-total").textContent = total.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
   }
 
-  function atualizarAnexo(idx, val){
-    linhas[idx].anexo = val;
-  }
-
   function removerLinha(idx){
     linhas.splice(idx, 1);
     renderTabela();
@@ -197,7 +193,7 @@
       const temAnexo = !row.manual && row.anexo && row.anexo !== "x" && row.anexo !== "pendente" && row.anexo !== "";
       let anexoCell;
       if(row.manual){
-        anexoCell = '<input class="anexo-input" type="text" value="' + (row.anexo||"") + '" placeholder="N°" oninput="atualizarAnexo(' + idx + ', this.value)">';
+        anexoCell = '<input class="anexo-input" type="text" data-idx="' + idx + '" value="' + (row.anexo||"") + '" placeholder="N°" oninput="linhas[parseInt(this.dataset.idx)].anexo=this.value">';
       } else {
         anexoCell = temAnexo
           ? '<span class="badge-sim">&#10003; ' + row.anexo + '</span>'
