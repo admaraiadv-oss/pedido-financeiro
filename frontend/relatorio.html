@@ -40,6 +40,8 @@
   .btn-download{padding:10px 20px;background:var(--green);color:white;border:none;border-radius:2px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;cursor:pointer;letter-spacing:0.06em;text-transform:uppercase;transition:all 0.18s;white-space:nowrap;}
   .btn-download:hover{background:#235a3e;}
   .btn-download:disabled{background:#b0b8c8;cursor:not-allowed;}
+  .btn-copy{padding:10px 20px;background:var(--navy);color:white;border:none;border-radius:2px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;cursor:pointer;letter-spacing:0.06em;text-transform:uppercase;transition:all 0.18s;white-space:nowrap;}
+  .btn-copy:hover{background:var(--navy-light);}
   .tabela{width:100%;border-collapse:collapse;font-size:13px;}
   .tabela th{text-align:left;padding:8px 10px;font-size:10px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink2);border-bottom:2px solid var(--border);}
   .tabela td{padding:9px 10px;border-bottom:1px solid var(--border);color:var(--ink);vertical-align:middle;}
@@ -97,7 +99,10 @@
         <p id="resumo-texto"></p>
         <strong id="resumo-total"></strong>
       </div>
-      <button class="btn-download" id="btn-zip" onclick="baixarZip()">&#8595; Baixar ZIP</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn-download" id="btn-zip" onclick="baixarZip()">&#8595; Baixar ZIP</button>
+        <button class="btn-copy" id="btn-copy" onclick="copiarTabela()">&#128203; Copiar tabela</button>
+      </div>
     </div>
     <table class="tabela">
       <thead>
@@ -226,6 +231,53 @@
     document.getElementById("manual-valor").value = "";
     document.getElementById("manual-anexo").value = "";
     showToast("Linha adicionada!", "success");
+  }
+
+  function copiarTabela(){
+    const cliente = dadosAtuais ? dadosAtuais.cliente : "";
+    const periodo = dadosAtuais ? dadosAtuais.dataInicio + " a " + dadosAtuais.dataFim : "";
+
+    let total = 0;
+    linhas.forEach(r => {
+      const s = String(r.valor).replace(/[^0-9,.]/g,"").replace(",",".");
+      const n = parseFloat(s);
+      if(!isNaN(n)) total += n;
+    });
+
+    let html = '<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;">';
+    html += '<tr style="background:#1B2D4F;color:white;">';
+    html += '<th>Data</th><th>Descrição</th><th>Valor</th><th>Anexo</th>';
+    html += '</tr>';
+
+    linhas.forEach(r => {
+      const temAnexo = r.anexo && r.anexo !== "x" && r.anexo !== "pendente" && r.anexo !== "";
+      const anexoText = temAnexo ? r.anexo : "—";
+      html += '<tr>';
+      html += '<td style="white-space:nowrap">' + r.data + '</td>';
+      html += '<td>' + r.descricao_completa + '</td>';
+      html += '<td style="text-align:right;white-space:nowrap">' + formatValor(r.valor) + '</td>';
+      html += '<td style="text-align:center">' + anexoText + '</td>';
+      html += '</tr>';
+    });
+
+    html += '<tr style="font-weight:bold;background:#f0f0f0;">';
+    html += '<td colspan="2">Total</td>';
+    html += '<td style="text-align:right">' + total.toLocaleString("pt-BR",{style:"currency",currency:"BRL"}) + '</td>';
+    html += '<td></td>';
+    html += '</tr>';
+    html += '</table>';
+
+    // Use ClipboardItem to copy as HTML (works in Outlook)
+    const blob = new Blob([html], {type: "text/html"});
+    const item = new ClipboardItem({"text/html": blob});
+    navigator.clipboard.write([item]).then(() => {
+      showToast("Tabela copiada! Cole no email.", "success");
+      const btn = document.getElementById("btn-copy");
+      btn.textContent = "✓ Copiado!";
+      setTimeout(() => { btn.innerHTML = "&#128203; Copiar tabela"; }, 2500);
+    }).catch(() => {
+      showToast("Erro ao copiar. Tente outro navegador.", "error");
+    });
   }
 
   async function buscar(){
