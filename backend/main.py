@@ -5,6 +5,7 @@ import logging
 import httpx
 import zipfile
 import threading
+import gc
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +13,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse, Response
 from typing import List, Optional
 import fitz
-from PIL import Image
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request as GoogleRequest
@@ -52,7 +52,6 @@ def save_token_to_render(token_json: str):
         render_api_key = os.environ.get("RENDER_API_KEY")
         service_id = os.environ.get("RENDER_SERVICE_ID")
         if not render_api_key or not service_id:
-            logger.warning("RENDER_API_KEY ou RENDER_SERVICE_ID não configurados.")
             return
         headers = {
             "Authorization": f"Bearer {render_api_key}",
@@ -61,9 +60,8 @@ def save_token_to_render(token_json: str):
         }
         url = f"https://api.render.com/v1/services/{service_id}/env-vars"
         r = httpx.get(url, headers=headers, timeout=10)
-        logger.info(f"Render GET env-vars: {r.status_code}")
         if r.status_code != 200:
-            logger.error(f"Erro ao buscar env vars: {r.text[:300]}")
+            logger.error(f"Erro ao buscar env vars: {r.text[:200]}")
             return
         env_vars = r.json()
         updated = []
@@ -79,11 +77,10 @@ def save_token_to_render(token_json: str):
         if not found:
             updated.append({"key": "GOOGLE_TOKEN_JSON", "value": token_json})
         r2 = httpx.put(url, headers=headers, json=updated, timeout=10)
-        logger.info(f"Render PUT env-vars: {r2.status_code}")
         if r2.status_code in (200, 201):
             logger.info("Token salvo no Render com sucesso.")
         else:
-            logger.error(f"Erro ao salvar token: {r2.text[:300]}")
+            logger.error(f"Erro ao salvar token: {r2.text[:200]}")
     except Exception as e:
         logger.error(f"Erro ao persistir token: {e}")
 
@@ -92,10 +89,7 @@ def get_credentials() -> Credentials:
     token_data = os.environ.get("GOOGLE_TOKEN_JSON")
     if not token_data:
         raise HTTPException(401, "Sistema não autorizado. Acesse /auth para autorizar.")
-
-    # Always load fresh from env to pick up saved tokens after restart
     creds = Credentials.from_authorized_user_info(json.loads(token_data), SCOPES)
-
     if not creds.valid:
         if creds.expired and creds.refresh_token:
             try:
@@ -114,7 +108,6 @@ def get_credentials() -> Credentials:
             raise HTTPException(401, "Token inválido. Acesse /auth para reautorizar.")
     else:
         _cached_creds = creds
-
     return creds
 
 def get_services():
@@ -134,27 +127,34 @@ def parse_date(s: str):
     return None
 
 def image_bytes_to_pdf_bytes(image_bytes: bytes) -> bytes:
-    img = Image.open(io.BytesIO(image_bytes))
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-    buf = io.BytesIO()
-    img.save(buf, format="PDF")
-    return buf.getvalue()
+    """Convert image to PDF using PyMuPDF only — no Pillow needed."""
+    # Open image with fitz directly
+    img_doc = fitz.open(stream=image_bytes, filetype="image")
+    pdf_bytes = img_doc.convert_to_pdf()
+    img_doc.close()
+    return pdf_bytes
 
 def to_pdf_bytes(content: bytes, filename: str) -> bytes:
     ext = filename.rsplit(".", 1)[-1].lower()
-    return content if ext == "pdf" else image_bytes_to_pdf_bytes(content)
+    if ext == "pdf":
+        return content
+    return image_bytes_to_pdf_bytes(content)
 
 def merge_pdfs(pdf_list: list) -> bytes:
+    """Merge PDFs with minimal memory — open, insert, close each one."""
     merged = fitz.open()
     for pb in pdf_list:
         src = fitz.open(stream=pb, filetype="pdf")
         merged.insert_pdf(src)
         src.close()
+        del src
     buf = io.BytesIO()
     merged.save(buf)
     merged.close()
-    return buf.getvalue()
+    result = buf.getvalue()
+    buf.close()
+    gc.collect()  # Force garbage collection after heavy operation
+    return result
 
 def upload_to_drive(drive, content: bytes, filename: str, folder_id: str):
     media = MediaIoBaseUpload(io.BytesIO(content), mimetype="application/pdf", resumable=False)
@@ -169,7 +169,9 @@ def download_from_drive(drive, file_id: str) -> bytes:
     done = False
     while not done:
         _, done = downloader.next_chunk()
-    return buf.getvalue()
+    result = buf.getvalue()
+    buf.close()
+    return result
 
 def delete_from_drive(drive, file_id: str):
     drive.files().delete(fileId=file_id).execute()
@@ -184,7 +186,7 @@ def list_pending(drive) -> list:
     return results.get("files", [])
 
 def get_next_anexo_number(sheets) -> int:
-    """Get next anexo number. Must be called inside _anexo_lock."""
+    """Must be called inside _anexo_lock."""
     spreadsheet_id = os.environ["SHEETS_ID"]
     sheet_name = os.environ.get("SHEET_NAME", "1")
     result = sheets.spreadsheets().values().get(
@@ -216,8 +218,7 @@ def get_valor_by_drive_id(sheets, drive_ids: list) -> dict:
     mapping = {}
     for row in values[1:]:
         if len(row) > 9 and row[9] in drive_ids:
-            valor = row[3] if len(row) > 3 else ""
-            mapping[row[9]] = valor
+            mapping[row[9]] = row[3] if len(row) > 3 else ""
     return mapping
 
 def append_row_sheets(sheets, row_data: list):
@@ -334,7 +335,6 @@ async def submit(
     valid_files = [f for f in arquivos if f and f.filename]
     has_file = bool(valid_files)
     file_drive_id = ""
-
     MAX_FILE_SIZE = 20 * 1024 * 1024
 
     if has_file:
@@ -344,10 +344,13 @@ async def submit(
             if len(file_bytes) > MAX_FILE_SIZE:
                 raise HTTPException(400, f"Arquivo '{f.filename}' excede o limite de 20MB.")
             pdfs.append(to_pdf_bytes(file_bytes, f.filename))
+            del file_bytes
         merged = merge_pdfs(pdfs) if len(pdfs) > 1 else pdfs[0]
+        del pdfs
         filename = f"PENDENTE {safe(descricao_completa)} - {safe(cliente)} - {safe(advogado)}.pdf"
         try:
             file_drive_id, _ = upload_to_drive(drive, merged, filename, folder_pendentes)
+            del merged
         except Exception as e:
             raise HTTPException(500, f"Erro ao salvar no Drive: {e}")
 
@@ -363,6 +366,7 @@ async def submit(
     except Exception as e:
         raise HTTPException(500, f"Erro ao gravar no Sheets: {e}")
 
+    gc.collect()
     return {"ok": True, "message": "Pedido registrado com sucesso!"}
 
 # ── Pendentes ─────────────────────────────────────────────────────────────────
@@ -377,9 +381,10 @@ async def get_pendentes():
             valor_map = get_valor_by_drive_id(sheets, drive_ids)
             for f in files:
                 f["valor"] = valor_map.get(f["id"], "")
-                file_id = f["id"]
-                f["previewLink"] = f"https://drive.google.com/file/d/{file_id}/preview"
+                f["previewLink"] = f"https://drive.google.com/file/d/{f['id']}/preview"
         return {"files": files}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"Erro ao listar pendentes: {e}")
 
@@ -398,10 +403,9 @@ async def anexar_comprovante(
     except Exception as e:
         raise HTTPException(500, f"Erro de autenticação Google: {e}")
 
-    folder_comprovantes = os.environ["DRIVE_FOLDER_COMPROVANTES"]
     MAX_FILE_SIZE = 20 * 1024 * 1024
 
-    # Read files before acquiring lock
+    # Read and convert files before acquiring lock
     comp_pdfs = []
     for c in comprovante:
         if c and c.filename:
@@ -409,17 +413,20 @@ async def anexar_comprovante(
             if len(file_bytes) > MAX_FILE_SIZE:
                 raise HTTPException(400, f"Arquivo '{c.filename}' excede o limite de 20MB.")
             comp_pdfs.append(to_pdf_bytes(file_bytes, c.filename))
+            del file_bytes
 
     original_pdf = download_from_drive(drive, file_id)
     all_pdfs = [original_pdf] + comp_pdfs
     merged = merge_pdfs(all_pdfs) if len(all_pdfs) > 1 else all_pdfs[0]
+    del all_pdfs, comp_pdfs, original_pdf
 
     try:
         with _anexo_lock:
             next_num = get_next_anexo_number(sheets)
             base_name = file_name.replace("PENDENTE ", "")
             final_name = f"{next_num} {base_name}"
-            new_file_id, _ = upload_to_drive(drive, merged, final_name, folder_comprovantes)
+            new_file_id, _ = upload_to_drive(drive, merged, final_name, os.environ["DRIVE_FOLDER_COMPROVANTES"])
+            del merged
             delete_from_drive(drive, file_id)
             update_anexo_in_sheets(sheets, file_id, next_num)
     except HTTPException:
@@ -428,6 +435,7 @@ async def anexar_comprovante(
         logger.error(f"Erro ao anexar comprovante: {e}")
         raise HTTPException(500, f"Erro: {e}")
 
+    gc.collect()
     return {"ok": True, "numero": next_num, "filename": final_name, "drive_id": new_file_id}
 
 # ── Finalizar sem comprovante ─────────────────────────────────────────────────
@@ -444,7 +452,6 @@ async def finalizar_sem_comprovante(
     except Exception as e:
         raise HTTPException(500, f"Erro de autenticação: {e}")
 
-    folder_comprovantes = os.environ["DRIVE_FOLDER_COMPROVANTES"]
     original_pdf = download_from_drive(drive, file_id)
 
     try:
@@ -452,13 +459,15 @@ async def finalizar_sem_comprovante(
             next_num = get_next_anexo_number(sheets)
             base_name = file_name.replace("PENDENTE ", "")
             final_name = f"{next_num} {base_name}"
-            new_file_id, _ = upload_to_drive(drive, original_pdf, final_name, folder_comprovantes)
+            new_file_id, _ = upload_to_drive(drive, original_pdf, final_name, os.environ["DRIVE_FOLDER_COMPROVANTES"])
+            del original_pdf
             delete_from_drive(drive, file_id)
             update_anexo_in_sheets(sheets, file_id, next_num)
     except Exception as e:
-        logger.error(f"Erro ao finalizar sem comprovante: {e}")
+        logger.error(f"Erro: {e}")
         raise HTTPException(500, f"Erro: {e}")
 
+    gc.collect()
     return {"ok": True, "numero": next_num, "filename": final_name, "drive_id": new_file_id}
 
 # ── Download ──────────────────────────────────────────────────────────────────
@@ -502,7 +511,6 @@ async def buscar_relatorio(cliente: str, data_inicio: str, data_fim: str):
         spreadsheetId=spreadsheet_id,
         range=f"{sheet_name}!A:J"
     ).execute()
-    values = result.get("values", [])
 
     d_inicio = parse_date(data_inicio)
     d_fim = parse_date(data_fim)
@@ -510,24 +518,22 @@ async def buscar_relatorio(cliente: str, data_inicio: str, data_fim: str):
         raise HTTPException(400, "Datas inválidas.")
 
     rows = []
-    for row in values[1:]:
+    for row in result.get("values", [])[1:]:
         if len(row) < 5:
             continue
-        row_cliente = row[1] if len(row) > 1 else ""
-        if row_cliente.strip().lower() != cliente.strip().lower():
+        if (row[1] if len(row) > 1 else "").strip().lower() != cliente.strip().lower():
             continue
         row_date = parse_date(row[0]) if row else None
-        if not row_date:
+        if not row_date or not (d_inicio <= row_date <= d_fim):
             continue
-        if d_inicio <= row_date <= d_fim:
-            rows.append({
-                "data": row[0],
-                "cliente": row[1] if len(row) > 1 else "",
-                "descricao_completa": row[6] if len(row) > 6 else "",
-                "valor": row[3] if len(row) > 3 else "",
-                "anexo": row[4] if len(row) > 4 else "",
-                "responsavel": row[5] if len(row) > 5 else "",
-            })
+        rows.append({
+            "data": row[0],
+            "cliente": row[1] if len(row) > 1 else "",
+            "descricao_completa": row[6] if len(row) > 6 else "",
+            "valor": row[3] if len(row) > 3 else "",
+            "anexo": row[4] if len(row) > 4 else "",
+            "responsavel": row[5] if len(row) > 5 else "",
+        })
 
     if not rows:
         raise HTTPException(404, "Nenhum registro encontrado.")
@@ -553,7 +559,6 @@ async def gerar_zip(
         spreadsheetId=spreadsheet_id,
         range=f"{sheet_name}!A:J"
     ).execute()
-    values = result.get("values", [])
 
     d_inicio = parse_date(data_inicio)
     d_fim = parse_date(data_fim)
@@ -561,24 +566,20 @@ async def gerar_zip(
         raise HTTPException(400, "Datas inválidas.")
 
     matching = []
-    for row in values[1:]:
+    for row in result.get("values", [])[1:]:
         if len(row) < 5:
             continue
-        row_cliente = row[1] if len(row) > 1 else ""
-        if row_cliente.strip().lower() != cliente.strip().lower():
+        if (row[1] if len(row) > 1 else "").strip().lower() != cliente.strip().lower():
             continue
         row_date = parse_date(row[0]) if row else None
-        if not row_date:
+        if not row_date or not (d_inicio <= row_date <= d_fim):
             continue
-        if d_inicio <= row_date <= d_fim:
-            matching.append(row)
+        matching.append(row)
 
     if not matching:
-        raise HTTPException(404, "Nenhum registro encontrado para esse cliente e período.")
+        raise HTTPException(404, "Nenhum registro encontrado.")
 
     folder_id = os.environ.get("DRIVE_FOLDER_COMPROVANTES")
-
-    # Get only needed anexo numbers
     needed_numbers = set()
     for row in matching:
         anexo = row[4] if len(row) > 4 else "x"
@@ -596,8 +597,7 @@ async def gerar_zip(
 
     file_map = {}
     for f in all_files:
-        name = f["name"]
-        parts = name.split(" ", 1)
+        parts = f["name"].split(" ", 1)
         if parts[0].isdigit() and parts[0] in needed_numbers:
             file_map[parts[0]] = f
 
@@ -615,14 +615,16 @@ async def gerar_zip(
                     try:
                         pdf_bytes = download_from_drive(drive, f["id"])
                         zf.writestr(f["name"], pdf_bytes)
+                        del pdf_bytes
                     except Exception as e:
                         logger.warning(f"Erro ao baixar {f['name']}: {e}")
 
-    zip_buf.seek(0)
     zip_bytes = zip_buf.getvalue()
+    zip_buf.close()
+    gc.collect()
 
     if not zip_bytes:
-        raise HTTPException(404, "Nenhum arquivo de comprovante encontrado para o período.")
+        raise HTTPException(404, "Nenhum arquivo encontrado.")
 
     filename = f"Comprovantes_{cliente.replace(' ','_')}_{data_inicio}_{data_fim}.zip"
     return Response(
