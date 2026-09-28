@@ -27,6 +27,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.mount("/static", StaticFiles(directory="../frontend"), name="static")
 
 _cached_creds = None
+_cached_drive = None
+_cached_sheets = None
 _anexo_lock = threading.Lock()
 
 SCOPES = [
@@ -98,11 +100,15 @@ def get_credentials() -> Credentials:
                 new_token = creds.to_json()
                 os.environ["GOOGLE_TOKEN_JSON"] = new_token
                 _cached_creds = creds
+                _cached_drive = None  # Force service rebuild with new token
+                _cached_sheets = None
                 save_token_to_render(new_token)
                 logger.info("Token renovado com sucesso.")
             except Exception as e:
                 logger.error(f"Falha ao renovar token: {e}")
                 _cached_creds = None
+                _cached_drive = None
+                _cached_sheets = None
                 raise HTTPException(401, "Token expirado. Acesse /auth para reautorizar.")
         else:
             raise HTTPException(401, "Token inválido. Acesse /auth para reautorizar.")
@@ -111,10 +117,16 @@ def get_credentials() -> Credentials:
     return creds
 
 def get_services():
+    global _cached_drive, _cached_sheets, _cached_creds
     creds = get_credentials()
-    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-    sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
-    return drive, sheets
+    # Rebuild service objects only when credentials change
+    if _cached_drive is None or _cached_sheets is None or (
+        _cached_creds is not None and creds.token != _cached_creds.token
+    ):
+        _cached_drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+        _cached_sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
+        logger.info("Drive/Sheets clients rebuilt.")
+    return _cached_drive, _cached_sheets
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -232,31 +244,34 @@ def append_row_sheets(sheets, row_data: list):
         body={"values": [row_data]}
     ).execute()
 
-def update_anexo_in_sheets(sheets, file_drive_id: str, numero: int):
+def update_anexo_in_sheets(sheets, file_drive_id: str, numero: int, row_num: int = None):
+    """Update anexo number in sheets. Pass row_num to skip the search."""
     spreadsheet_id = os.environ["SHEETS_ID"]
     sheet_name = os.environ.get("SHEET_NAME", "1")
-    result = sheets.spreadsheets().values().get(
+    if row_num is None:
+        result = sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"{sheet_name}!A:J"
+        ).execute()
+        for i, row in enumerate(result.get("values", [])):
+            if len(row) > 9 and row[9] == file_drive_id:
+                row_num = i + 1
+                break
+    if row_num is None:
+        return False
+    sheets.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
-        range=f"{sheet_name}!A:J"
+        range=f"{sheet_name}!E{row_num}",
+        valueInputOption="USER_ENTERED",
+        body={"values": [[str(numero)]]}
     ).execute()
-    values = result.get("values", [])
-    for i, row in enumerate(values):
-        if len(row) > 9 and row[9] == file_drive_id:
-            row_num = i + 1
-            sheets.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=f"{sheet_name}!E{row_num}",
-                valueInputOption="USER_ENTERED",
-                body={"values": [[str(numero)]]}
-            ).execute()
-            sheets.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=f"{sheet_name}!J{row_num}",
-                valueInputOption="USER_ENTERED",
-                body={"values": [[""]]}
-            ).execute()
-            return True
-    return False
+    sheets.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!J{row_num}",
+        valueInputOption="USER_ENTERED",
+        body={"values": [[""]]}
+    ).execute()
+    return True
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
 
@@ -422,13 +437,33 @@ async def anexar_comprovante(
 
     try:
         with _anexo_lock:
-            next_num = get_next_anexo_number(sheets)
+            # Single sheet read: find row AND get max anexo number together
+            spreadsheet_id = os.environ["SHEETS_ID"]
+            sheet_name = os.environ.get("SHEET_NAME", "1")
+            result = sheets.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=f"{sheet_name}!A:J"
+            ).execute()
+            values = result.get("values", [])
+            max_num = 0
+            target_row = None
+            for i, row in enumerate(values[1:], 1):
+                if row:
+                    try:
+                        n = int(str(row[4]).strip()) if len(row) > 4 else 0
+                        if n > max_num:
+                            max_num = n
+                    except (ValueError, TypeError):
+                        pass
+                if len(row) > 9 and row[9] == file_id:
+                    target_row = i + 1
+            next_num = max_num + 1
             base_name = file_name.replace("PENDENTE ", "")
             final_name = f"{next_num} {base_name}"
             new_file_id, _ = upload_to_drive(drive, merged, final_name, os.environ["DRIVE_FOLDER_COMPROVANTES"])
             del merged
             delete_from_drive(drive, file_id)
-            update_anexo_in_sheets(sheets, file_id, next_num)
+            update_anexo_in_sheets(sheets, file_id, next_num, row_num=target_row)
     except HTTPException:
         raise
     except Exception as e:
@@ -456,13 +491,32 @@ async def finalizar_sem_comprovante(
 
     try:
         with _anexo_lock:
-            next_num = get_next_anexo_number(sheets)
+            spreadsheet_id = os.environ["SHEETS_ID"]
+            sheet_name = os.environ.get("SHEET_NAME", "1")
+            result = sheets.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=f"{sheet_name}!A:J"
+            ).execute()
+            values = result.get("values", [])
+            max_num = 0
+            target_row = None
+            for i, row in enumerate(values[1:], 1):
+                if row:
+                    try:
+                        n = int(str(row[4]).strip()) if len(row) > 4 else 0
+                        if n > max_num:
+                            max_num = n
+                    except (ValueError, TypeError):
+                        pass
+                if len(row) > 9 and row[9] == file_id:
+                    target_row = i + 1
+            next_num = max_num + 1
             base_name = file_name.replace("PENDENTE ", "")
             final_name = f"{next_num} {base_name}"
             new_file_id, _ = upload_to_drive(drive, original_pdf, final_name, os.environ["DRIVE_FOLDER_COMPROVANTES"])
             del original_pdf
             delete_from_drive(drive, file_id)
-            update_anexo_in_sheets(sheets, file_id, next_num)
+            update_anexo_in_sheets(sheets, file_id, next_num, row_num=target_row)
     except Exception as e:
         logger.error(f"Erro: {e}")
         raise HTTPException(500, f"Erro: {e}")
