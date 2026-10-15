@@ -6,6 +6,7 @@ import httpx
 import zipfile
 import threading
 import gc
+import re
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -548,6 +549,97 @@ async def baixar_comprovante(file_id: str):
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
+def _numero_anexo(row):
+    """Devolve (numero, ilegivel). numero=None se a linha nao espera arquivo."""
+    anexo = str(row[4]).strip() if len(row) > 4 else ""
+    if anexo.lower() in ("", "x", "pendente"):
+        return None, None
+    try:
+        return str(int(float(anexo))), None
+    except (ValueError, TypeError):
+        return None, anexo
+
+def montar_zip(matching: list, all_files: list, baixar):
+    """Monta o ZIP e devolve (zip_bytes, relatorio).
+    baixar(file_id) -> bytes. Nada falha em silencio: o que faltar vai no relatorio
+    e, se houver problema, tambem num AVISO dentro do ZIP."""
+    ordem = []
+    ilegiveis = []
+    for row in matching:
+        numero, ruim = _numero_anexo(row)
+        if ruim is not None:
+            ilegiveis.append(ruim)
+        elif numero is not None and numero not in ordem:
+            ordem.append(numero)
+
+    por_numero = {}
+    for f in all_files:
+        prefixo = f["name"].split(" ", 1)[0]
+        if prefixo.isdigit() and prefixo in ordem:
+            por_numero.setdefault(prefixo, []).append(f)
+    file_map = {n: fs[-1] for n, fs in por_numero.items()}
+    duplicados = {n: [f["name"] for f in fs] for n, fs in por_numero.items() if len(fs) > 1}
+
+    incluidos, nao_encontrados, erros = [], [], []
+    candidatos = {}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for numero in ordem:
+            f = file_map.get(numero)
+            if f is None:
+                nao_encontrados.append(numero)
+                continue
+            try:
+                zf.writestr(f["name"], baixar(f["id"]))
+                incluidos.append(numero)
+            except Exception as e:
+                erros.append((numero, f["name"], str(e)[:200]))
+
+        for numero in nao_encontrados:
+            padrao = re.compile(r"\s*0*" + re.escape(numero) + r"(?!\d)")
+            candidatos[numero] = [f["name"] for f in all_files if padrao.match(f["name"])]
+
+        if nao_encontrados or erros or ilegiveis or duplicados:
+            linhas = [
+                "AVISO - este ZIP pode estar incompleto.",
+                "Uso interno: nao envie este arquivo ao cliente.",
+                "",
+            ]
+            if nao_encontrados:
+                linhas.append("Numeros de anexo SEM arquivo na pasta de comprovantes: " + ", ".join(nao_encontrados))
+                for numero in nao_encontrados:
+                    nomes = candidatos.get(numero) or []
+                    if nomes:
+                        linhas.append("  - " + numero + ": nomes parecidos na pasta: " + "; ".join(repr(n) for n in nomes))
+                    else:
+                        linhas.append("  - " + numero + ": nenhum arquivo com esse numero no nome")
+                linhas.append("")
+            if erros:
+                linhas.append("Arquivos encontrados mas que falharam ao baixar:")
+                for numero, nome, motivo in erros:
+                    linhas.append("  - " + numero + " (" + nome + "): " + motivo)
+                linhas.append("")
+            if duplicados:
+                linhas.append("Mais de um arquivo com o mesmo numero (foi usado o ultimo da lista):")
+                for numero, nomes in duplicados.items():
+                    linhas.append("  - " + numero + ": " + "; ".join(nomes))
+                linhas.append("")
+            if ilegiveis:
+                linhas.append("Valores de anexo que nao deu para ler como numero: " + ", ".join(repr(v) for v in ilegiveis))
+                linhas.append("")
+            zf.writestr("AVISO_arquivos_faltando.txt", "\n".join(linhas))
+
+    rel = {
+        "procurados": ordem,
+        "incluidos": incluidos,
+        "nao_encontrados": nao_encontrados,
+        "erros": erros,
+        "duplicados": duplicados,
+        "ilegiveis": ilegiveis,
+        "candidatos": candidatos,
+    }
+    return buf.getvalue(), rel
+
 # ── Relatório ─────────────────────────────────────────────────────────────────
 
 @app.get("/buscar-relatorio")
@@ -634,51 +726,32 @@ async def gerar_zip(
         raise HTTPException(404, "Nenhum registro encontrado.")
 
     folder_id = os.environ.get("DRIVE_FOLDER_COMPROVANTES")
-    needed_numbers = set()
-    for row in matching:
-        anexo = row[4] if len(row) > 4 else "x"
-        if anexo and anexo not in ("x", "pendente", ""):
-            try:
-                needed_numbers.add(str(int(float(anexo))))
-            except (ValueError, TypeError):
-                pass
-
     all_files = drive.files().list(
         q=f"'{folder_id}' in parents and trashed=false",
         fields="files(id, name)",
         pageSize=500
     ).execute().get("files", [])
 
-    file_map = {}
-    for f in all_files:
-        parts = f["name"].split(" ", 1)
-        if parts[0].isdigit() and parts[0] in needed_numbers:
-            file_map[parts[0]] = f
+    zip_bytes, rel = montar_zip(matching, all_files, lambda fid: download_from_drive(drive, fid))
 
-    zip_buf = io.BytesIO()
-    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for row in matching:
-            anexo = row[4] if len(row) > 4 else "x"
-            if anexo and anexo not in ("x", "pendente", ""):
-                try:
-                    key = str(int(float(anexo)))
-                except (ValueError, TypeError):
-                    continue
-                f = file_map.get(key)
-                if f:
-                    try:
-                        pdf_bytes = download_from_drive(drive, f["id"])
-                        zf.writestr(f["name"], pdf_bytes)
-                        del pdf_bytes
-                    except Exception as e:
-                        logger.warning(f"Erro ao baixar {f['name']}: {e}")
-
-    zip_bytes = zip_buf.getvalue()
-    zip_buf.close()
+    logger.info(
+        "ZIP %s %s a %s | procurados=%s incluidos=%s faltando=%s erros_download=%s duplicados=%s ilegiveis=%s | arquivos_na_pasta=%d",
+        cliente, data_inicio, data_fim, rel["procurados"], rel["incluidos"], rel["nao_encontrados"],
+        [e[0] for e in rel["erros"]], list(rel["duplicados"]), rel["ilegiveis"], len(all_files),
+    )
+    for numero, nomes in rel["candidatos"].items():
+        logger.warning("ZIP: anexo %s sem arquivo; nomes parecidos na pasta: %s", numero, [repr(n) for n in nomes] or "nenhum")
+    for numero, nome, motivo in rel["erros"]:
+        logger.warning("ZIP: falha ao baixar %s (%s): %s", numero, nome, motivo)
+    if len(all_files) >= 500:
+        logger.warning("ZIP: a pasta tem 500 ou mais arquivos; a listagem pode estar truncada.")
     gc.collect()
 
-    if not zip_bytes:
-        raise HTTPException(404, "Nenhum arquivo encontrado.")
+    if not rel["incluidos"]:
+        if not rel["procurados"]:
+            raise HTTPException(404, "Nenhum registro com comprovante nesse periodo.")
+        raise HTTPException(404, "Nenhum dos arquivos foi encontrado. Numeros procurados: " + ", ".join(rel["procurados"]))
+
 
     filename = f"Comprovantes_{cliente.replace(' ','_')}_{data_inicio}_{data_fim}.zip"
     return Response(
